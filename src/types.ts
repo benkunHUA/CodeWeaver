@@ -4,6 +4,7 @@ import type {
   MessageParam,
   Tool,
 } from "@anthropic-ai/sdk/resources/messages";
+import type { HookBus } from "./hooks/HookBus.js";
 
 export type Conversation = MessageParam[];
 export type ModelRequest = MessageCreateParamsNonStreaming;
@@ -100,6 +101,20 @@ export interface AgentOptions {
   readonly model: string;
   readonly system?: string;
   readonly registry?: ToolRegistry;
-  readonly hooks?: ToolHooks;
+  /**
+   * Registry-level hooks: `before`/`after` callbacks around every tool
+   * invocation, including unknown tool names. They can observe a call but
+   * cannot block it, and their failures only produce diagnostics.
+   */
+  readonly toolHooks?: ToolHooks;
+  /**
+   * Loop-level lifecycle bus (UserPromptSubmit / PreToolUse / PostToolUse /
+   * Stop). Unlike `toolHooks`, a handler's return value is meaningful: a
+   * PreToolUse string blocks the tool call, and a Stop string injects another
+   * user turn instead of ending the loop.
+   */
+  readonly hooks?: HookBus;
+  /** Workspace passed to hook contexts; defaults to `process.cwd()`. */
+  readonly workspaceRoot?: string;
   readonly log?: Logger;
 }

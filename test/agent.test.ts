@@ -5,6 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ContentBlock } from "@anthropic-ai/sdk/resources/messages";
 import { agentLoop, systemPrompt, TOOLS } from "../src/agent.js";
+import { HookBus, createDefaultHooks } from "../src/hooks/index.js";
+import { DenyAllApprovalPrompt, createDefaultPermissionPipeline } from "../src/permission/index.js";
 import { createDefaultRegistry } from "../src/tools/index.js";
 import type { Conversation, ModelClient, ModelRequest, ModelResponse } from "../src/types.js";
 
@@ -17,9 +19,24 @@ const tool = (id: string, command: string): ContentBlock => ({
 const readTool = (id: string, path: string): ContentBlock => ({
   type: "tool_use", id, name: "read_file", input: { path }, caller: { type: "direct" },
 });
+const globTool = (id: string, pattern: string): ContentBlock => ({
+  type: "tool_use", id, name: "glob", input: { pattern }, caller: { type: "direct" },
+});
 const unknownTool = (id: string): ContentBlock => ({
   type: "tool_use", id, name: "not_a_tool", input: {}, caller: { type: "direct" },
 });
+
+/** Default hooks whose only reachable decision is a denial (no TTY approval). */
+function denyingHooks(workspaceRoot: string): HookBus {
+  return createDefaultHooks({
+    checker: createDefaultPermissionPipeline({
+      workspaceRoot,
+      approval: new DenyAllApprovalPrompt(),
+    }),
+    workspaceRoot,
+    log: () => {},
+  });
+}
 
 function fakeClient(responses: ModelResponse[]) {
   const requests: ModelRequest[] = [];
@@ -139,7 +156,10 @@ test("TR-3.1: unknown tool names return Unknown string without throw", async () 
 
 test("tool errors are ordinary results fed back to the model", async () => {
   const { client } = fakeClient([
-    { content: [tool("a", "sudo true")], stop_reason: "tool_use" },
+    // `> /dev/null` only matches the tool-level bash deny list, so this stays
+    // an ordinary tool error: without a permission pipeline the guard inside
+    // the bash tool still applies.
+    { content: [tool("a", "> /dev/null")], stop_reason: "tool_use" },
     { content: [text("blocked")], stop_reason: "end_turn" },
   ]);
   const messages: Conversation = [];
@@ -154,6 +174,79 @@ test("tool errors are ordinary results fed back to the model", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("default hooks block a deny-listed command before the tool is executed", async () => {
+  const { client } = fakeClient([
+    { content: [tool("a", "sudo true")], stop_reason: "tool_use" },
+    { content: [text("blocked")], stop_reason: "end_turn" },
+  ]);
+  const messages: Conversation = [];
+  const root = await mkdtemp(join(tmpdir(), "cw-agent-perm-"));
+  try {
+    const registry = await createDefaultRegistry({
+      root,
+      overrides: [{
+        name: "bash",
+        handler: async () => assert.fail("A denied bash call must never reach the tool handler"),
+      }],
+    });
+    await agentLoop(messages, {
+      client, model: "test", registry, log: () => {},
+      hooks: denyingHooks(root), workspaceRoot: root,
+    });
+    assert.deepEqual(messages[1], {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "a", content: "Permission denied." }],
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("allowed and denied calls in one turn keep tool_use order and ids", async () => {
+  const { client } = fakeClient([
+    { content: [globTool("g1", "*.txt"), tool("b1", "rm -rf /")], stop_reason: "tool_use" },
+    { content: [text("done")], stop_reason: "end_turn" },
+  ]);
+  const messages: Conversation = [];
+  const root = await mkdtemp(join(tmpdir(), "cw-agent-mixed-"));
+  try {
+    await writeFile(join(root, "a.txt"), "alpha");
+    const registry = await createDefaultRegistry({ root });
+    await agentLoop(messages, {
+      client, model: "test", registry, log: () => {},
+      hooks: denyingHooks(root), workspaceRoot: root,
+    });
+    assert.deepEqual(messages[1], {
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: "g1", content: "a.txt" },
+        { type: "tool_result", tool_use_id: "b1", content: "Permission denied." },
+      ],
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a Stop handler can inject a follow-up user message and keep the loop running", async () => {
+  const { client, requests } = fakeClient([
+    { content: [text("first answer")], stop_reason: "end_turn" },
+    { content: [text("second answer")], stop_reason: "end_turn" },
+  ]);
+  const messages: Conversation = [{ role: "user", content: "hello" }];
+  const hooks = new HookBus();
+  let stops = 0;
+  hooks.register("Stop", () => {
+    stops += 1;
+    return stops === 1 ? "请先补测试" : undefined;
+  });
+  await agentLoop(messages, { client, model: "test", hooks, log: () => {} });
+  assert.equal(stops, 2, "Stop fires once per exit attempt");
+  assert.equal(requests.length, 2, "the model is asked again after the injected message");
+  assert.deepEqual(messages[2], { role: "user", content: "请先补测试" });
+  assert.equal(messages.length, 4);
 });
 
 test("API errors propagate without adding invented assistant messages", async () => {

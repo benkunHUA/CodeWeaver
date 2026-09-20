@@ -18,7 +18,7 @@ export function systemPrompt(cwd = process.cwd()): string {
 async function resolveRegistry(options: AgentOptions): Promise<ToolRegistry> {
   if (options.registry) return options.registry;
   // `log` also carries registry diagnostics, i.e. hook failures.
-  return createDefaultRegistry({ hooks: options.hooks, logger: options.log });
+  return createDefaultRegistry({ hooks: options.toolHooks, logger: options.log });
 }
 
 export async function agentLoop(
@@ -27,6 +27,8 @@ export async function agentLoop(
 ): Promise<void> {
   const { client, model, log = console.log } = options;
   const system = options.system ?? systemPrompt();
+  const hooks = options.hooks;
+  const workspaceRoot = options.workspaceRoot ?? process.cwd();
   const registry = await resolveRegistry(options);
   const tools: Exclude<MessageCreateParamsBase["tools"], undefined> = registry.getSchemas() as Exclude<
     MessageCreateParamsBase["tools"],
@@ -43,11 +45,33 @@ export async function agentLoop(
 
     messages.push({ role: "assistant", content: response.content as ContentBlock[] });
     const toolCalls = response.content.filter((block) => block.type === "tool_use");
-    if (toolCalls.length === 0) return;
+    if (toolCalls.length === 0) {
+      // A Stop handler may veto the exit by returning a follow-up user message.
+      const forced = await hooks?.trigger("Stop", { messages, workspaceRoot });
+      if (typeof forced === "string") {
+        messages.push({ role: "user", content: forced });
+        continue;
+      }
+      return;
+    }
 
     const results: ToolResultBlockParam[] = [];
     for (const raw of toolCalls) {
       const block = raw as ToolUseBlock;
+      const blocked = await hooks?.trigger("PreToolUse", {
+        toolName: block.name,
+        input: block.input,
+        workspaceRoot,
+      });
+      if (blocked !== undefined) {
+        log(sliceCharacters(blocked, 200));
+        results.push({
+          type: "tool_result",
+          tool_use_id: block.id,
+          content: blocked,
+        });
+        continue;
+      }
       if (block.name === BASH_TOOL_NAME) {
         const parsed = parseBashInput(block.input);
         if (!("error" in parsed)) {
@@ -55,6 +79,12 @@ export async function agentLoop(
         }
       }
       const output = await registry.invoke(block.name, block.input);
+      await hooks?.trigger("PostToolUse", {
+        toolName: block.name,
+        input: block.input,
+        result: output,
+        workspaceRoot,
+      });
       log(sliceCharacters(output, 200));
       results.push({
         type: "tool_result",
