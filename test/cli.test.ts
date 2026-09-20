@@ -26,7 +26,7 @@ async function runProcess(cwd: string, input: string, env: NodeJS.ProcessEnv) {
   return { code, stdout, stderr };
 }
 
-test("compiled CLI uses real SDK, local dotenv override, shell tools and multi-turn state", async () => {
+test("TR-3.2: compiled CLI uses real SDK, local dotenv override, bash+read+write tools and multi-turn state", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "agent-ts-cli-"));
   const requests: Array<{ body: Record<string, unknown>; key: unknown; auth: unknown }> = [];
   const server = createServer(async (req, res) => {
@@ -37,19 +37,21 @@ test("compiled CLI uses real SDK, local dotenv override, shell tools and multi-t
       key: req.headers["x-api-key"],
       auth: req.headers.authorization,
     });
-    const content = requests.length === 1
-      ? [{ type: "tool_use", id: "call_1", name: "bash", input: { command: "printf cli-tool-ok" } }]
-      : [{ type: "text", text: requests.length === 2 ? "first answer" : "second answer" }];
+    const first = [{ type: "tool_use", id: "call_1", name: "read_file", input: { path: "seed.txt" } }];
+    const second = [{ type: "tool_use", id: "call_2", name: "write_file", input: { path: "out.txt", content: "pong" } }];
+    const third = [{ type: "tool_use", id: "call_3", name: "bash", input: { command: "printf cli-tool-ok" } }];
+    const content = requests.length === 1 ? first : requests.length === 2 ? second : requests.length === 3 ? third : [{ type: "text", text: requests.length === 4 ? "first answer" : "second answer" }];
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({
       id: `msg_${requests.length}`, type: "message", role: "assistant",
       model: "local-test", content,
-      stop_reason: requests.length === 1 ? "tool_use" : "end_turn",
+      stop_reason: requests.length <= 3 ? "tool_use" : "end_turn",
       stop_sequence: null,
       usage: { input_tokens: 1, output_tokens: 1 },
     }));
   });
   try {
+    await writeFile(join(cwd, "seed.txt"), "seeded");
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     assert.ok(address && typeof address !== "string");
@@ -62,25 +64,33 @@ test("compiled CLI uses real SDK, local dotenv override, shell tools and multi-t
     });
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stderr, "");
+    assert.match(result.stdout, /\x1b\[35m> read_file\x1b\[0m/);
+    assert.match(result.stdout, /\x1b\[35m> write_file\x1b\[0m/);
+    assert.match(result.stdout, /\x1b\[35m> bash\x1b\[0m/);
+    assert.match(result.stdout, /\x1b\[33m\$ printf cli-tool-ok\x1b\[0m/);
     assert.match(result.stdout, /cli-tool-ok/);
     assert.match(result.stdout, /first answer/);
     assert.match(result.stdout, /second answer/);
+    assert.match(result.stdout, /输入问题后按回车发送，输入 q 退出。/);
+    assert.match(result.stdout, /CodeWeaver >> /);
     assert.ok(!result.stdout.includes("\x01") && !result.stdout.includes("\x02"));
-    assert.equal(requests.length, 3);
+    assert.equal(requests.length, 5);
     for (const request of requests) {
       assert.equal(request.body.model, "from-dotenv");
       assert.equal(request.body.max_tokens, 8000);
       assert.equal(request.key, "local-fake-key");
       assert.equal(request.auth, undefined);
+      assert.equal(Array.isArray(request.body.tools) ? request.body.tools.length : 0, 5);
     }
-    const secondHistory = requests[1]?.body.messages as unknown[];
+    assert.equal((requests[0]?.body.messages as unknown[]).length, 1);
     const thirdHistory = requests[2]?.body.messages as unknown[];
-    assert.deepEqual(secondHistory[2], {
+    const fifthHistory = requests[4]?.body.messages as unknown[];
+    assert.deepEqual(thirdHistory[4], {
       role: "user",
-      content: [{ type: "tool_result", tool_use_id: "call_1", content: "cli-tool-ok" }],
+      content: [{ type: "tool_result", tool_use_id: "call_2", content: "Wrote 4 bytes to out.txt" }],
     });
-    assert.equal(thirdHistory.length, 5);
-    assert.deepEqual(thirdHistory[4], { role: "user", content: "second question" });
+    assert.equal(fifthHistory.length, 9);
+    assert.deepEqual(fifthHistory[8], { role: "user", content: "second question" });
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -97,7 +107,7 @@ test("quit aliases, blank lines and EOF exit without model requests", async () =
         ANTHROPIC_BASE_URL: "http://127.0.0.1:1",
       });
       assert.equal(result.code, 0, result.stderr);
-      assert.match(result.stdout, /s01: Agent Loop/);
+      assert.match(result.stdout, /输入问题后按回车发送，输入 q 退出。/);
     }
   } finally {
     await rm(cwd, { recursive: true, force: true });

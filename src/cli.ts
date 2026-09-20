@@ -4,7 +4,7 @@ import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import { agentLoop, systemPrompt } from "./agent.js";
 import { stripWhitespace } from "./bash.js";
-import { loadConfig } from "./config.js";
+import { loadRuntimeConfig } from "./config.js";
 import type { AgentOptions, Conversation } from "./types.js";
 
 export async function runCli(options: AgentOptions): Promise<void> {
@@ -13,16 +13,12 @@ export async function runCli(options: AgentOptions): Promise<void> {
   const rl = createInterface({ input: stdin, output: stdout, terminal: !!stdin.isTTY });
   let closed = false;
   rl.on("close", () => { closed = true; });
-  // Node handles ANSI prompt width itself; GNU Readline's SOH/STX markers
-  // must not be copied into this prompt.
-  rl.setPrompt("\x1b[36ms01 >> \x1b[0m");
+  rl.setPrompt("\x1b[36mCodeWeaver >> \x1b[0m");
   rl.on("SIGINT", () => rl.close());
-  log("s01: Agent Loop");
-  log("Enter a question, press Enter to send. Type q to quit.\n");
+  log("输入问题后按回车发送，输入 q 退出。\n");
 
   try {
     rl.prompt();
-    // The iterator keeps piped lines queued while a model request is running.
     for await (const query of rl) {
       if (["q", "exit", ""].includes(stripWhitespace(query).toLowerCase())) break;
       history.push({ role: "user", content: query });
@@ -43,7 +39,8 @@ export async function runCli(options: AgentOptions): Promise<void> {
 
 async function main(): Promise<void> {
   try {
-    await runCli({ ...loadConfig(), system: systemPrompt() });
+    const runtime = await loadRuntimeConfig();
+    await runCli({ ...runtime, system: systemPrompt(runtime.workspaceRoot) });
   } catch (error) {
     console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;

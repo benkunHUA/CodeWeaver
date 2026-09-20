@@ -1,14 +1,21 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "dotenv";
-import type { ModelClient } from "./types.js";
+import type { ModelClient, ToolRegistry, ToolHooks } from "./types.js";
+import { createDefaultRegistry } from "./tools/index.js";
+import { createWorkspace } from "./workspace.js";
 
-export interface RuntimeConfig {
-  model: string;
-  client: ModelClient;
+export interface Config {
+  readonly model: string;
+  readonly client: ModelClient;
+  readonly workspaceRoot: string;
+  readonly hooks: ToolHooks;
 }
 
-export function loadConfig(): RuntimeConfig {
-  // Only load the current project's .env, so this directory is standalone.
+export interface RuntimeConfig extends Config {
+  readonly registry: ToolRegistry;
+}
+
+export function loadConfig(): Config {
   config({ override: true, quiet: true });
   if (process.env.ANTHROPIC_BASE_URL) {
     delete process.env.ANTHROPIC_AUTH_TOKEN;
@@ -19,6 +26,25 @@ export function loadConfig(): RuntimeConfig {
   if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
     throw new Error("ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is required");
   }
-  // The SDK reads API key, bearer token and base URL from the environment.
-  return { model, client: new Anthropic() };
+  const workspaceRoot = process.env.CODEWEAVER_ROOT ?? process.cwd();
+  const hooks: ToolHooks = {
+    before(ctx) {
+      console.log(`\x1b[35m> ${ctx.name}\x1b[0m`);
+    },
+  };
+  return {
+    model,
+    client: new Anthropic(),
+    workspaceRoot,
+    hooks,
+  };
+}
+
+export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
+  const config = loadConfig();
+  const workspace = await createWorkspace(config.workspaceRoot);
+  const registry = await createDefaultRegistry({
+    root: workspace.root, hooks: config.hooks, logger: console.error,
+  });
+  return { ...config, workspaceRoot: workspace.root, registry };
 }

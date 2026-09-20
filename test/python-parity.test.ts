@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { agentLoop } from "../src/agent.js";
 import { runBash } from "../src/bash.js";
-import type { Conversation, ModelRequest, ModelResponse } from "../src/types.js";
+import { createToolRegistry } from "../src/tools/registry.js";
+import type { AnthropicTool, Conversation, ModelRequest, ModelResponse } from "../src/types.js";
 
 const source = fileURLToPath(new URL("../../s01_agent_loop/code.py", import.meta.url));
 const python = process.env.PYTHON ?? "python3";
@@ -86,12 +87,13 @@ test("Python parity: identical requests, history mutations, command order and lo
   const cases: ModelResponse[][] = [
     [{ content: [], stop_reason: "tool_use" }],
     [{ content: [{ type: "text", text: "", citations: null }], stop_reason: "tool_use" }],
+    [{ content: [{ type: "text", text: "finished", citations: null }], stop_reason: "end_turn" }],
     [
       {
         content: [
           { type: "text", text: "working", citations: null },
           { type: "tool_use", id: "a", name: "bash", input: { command: "first" }, caller: { type: "direct" } },
-          { type: "tool_use", id: "b", name: "bash", input: { command: "second" }, caller: { type: "direct" } },
+          { type: "tool_use", id: "b", name: "bash", input: { command: "\u{1f680}".repeat(210) }, caller: { type: "direct" } },
         ],
         stop_reason: "end_turn",
       },
@@ -105,23 +107,47 @@ test("Python parity: identical requests, history mutations, command order and lo
     ],
   ];
   for (const responses of cases) {
-    const expected = reference({ mode: "loop", responses });
+    const expected = reference({ mode: "loop", responses }) as {
+      readonly messages: unknown;
+      readonly requests: ModelRequest[];
+      readonly commands: readonly string[];
+      readonly logs: string;
+    };
     const queue = [...responses];
     const requests: ModelRequest[] = [];
     const commands: string[] = [];
     let logs = "";
     const messages: Conversation = [{ role: "user", content: "hello" }];
+    const firstRequest = expected.requests[0];
+    assert.ok(firstRequest);
+    assert.equal(typeof firstRequest.system, "string");
+    assert.equal(firstRequest.tools?.length, 1);
+    const bashSchema = firstRequest.tools?.[0] as AnthropicTool;
+    assert.equal(bashSchema.name, "bash");
+    // s01 exposes only bash. Supply its real schema before the request is made;
+    // never replace captured request fields to make the comparison pass.
+    const registry = createToolRegistry([{
+      name: "bash",
+      schema: structuredClone(bashSchema),
+      handler: async (input: { command: string }) => {
+        assert.ok("command" in input);
+        commands.push(input.command);
+        return `result:${input.command}`;
+      },
+    }]);
     await agentLoop(messages, {
       model: "test-model",
+      system: firstRequest.system as string,
+      registry,
       client: { messages: { async create(request) {
         requests.push(structuredClone(request));
         const response = queue.shift();
         assert.ok(response);
         return response;
       } } },
-      runCommand: async (command) => { commands.push(command); return `result:${command}`; },
       log: (line) => { logs += `${line}\n`; },
     });
+    assert.equal(queue.length, 0);
     assert.deepEqual({ messages, requests, commands, logs }, expected);
   }
 });
