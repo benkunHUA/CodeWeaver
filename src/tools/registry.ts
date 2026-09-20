@@ -12,8 +12,9 @@ import type { JsonSchemaObject } from "./validate.js";
 import { validateObjectSchema } from "./validate.js";
 
 interface CreateToolRegistryOptions {
-  readonly hooks?: ToolHooks;
-  readonly logger?: ToolRegistryLogger;
+  // Explicit `| undefined` lets callers forward optional values directly.
+  readonly hooks?: ToolHooks | undefined;
+  readonly logger?: ToolRegistryLogger | undefined;
 }
 
 function getObjectSchema(schema: RegisteredToolDefinition["schema"]["input_schema"]): JsonSchemaObject {

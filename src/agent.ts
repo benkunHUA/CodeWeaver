@@ -5,16 +5,9 @@ import type {
   ToolUseBlock,
 } from "@anthropic-ai/sdk/resources/messages";
 import { sliceCharacters } from "./bash.js";
-import type {
-  AgentOptions,
-  BashInput,
-  Conversation,
-  ToolHandler,
-  ToolRegistry,
-} from "./types.js";
-import type { ToolRegistryLogger } from "./types.js";
+import type { AgentOptions, Conversation, ToolRegistry } from "./types.js";
 import { createDefaultRegistry, defaultToolSchemas } from "./tools/index.js";
-import type { DefaultRegistryOptions } from "./tools/index.js";
+import { BASH_TOOL_NAME, parseBashInput } from "./tools/bashTool.js";
 
 export const TOOLS = defaultToolSchemas;
 
@@ -22,44 +15,10 @@ export function systemPrompt(cwd = process.cwd()): string {
   return `你是一个位于 ${cwd} 的编程智能体。请使用工具解决问题，直接动手，不要只做解释。`;
 }
 
-function parseBashInput(input: unknown): BashInput | { readonly error: string } {
-  if (
-    typeof input !== "object" ||
-    input === null ||
-    !("command" in input) ||
-    typeof input.command !== "string"
-  ) {
-    return { error: "Invalid input for bash: command must be a string" };
-  }
-  return { command: input.command };
-}
-
-function isBashBlock(block: Pick<ToolUseBlock, "name">): boolean {
-  return block.name === "bash";
-}
-
 async function resolveRegistry(options: AgentOptions): Promise<ToolRegistry> {
   if (options.registry) return options.registry;
-  const legacy = options.runCommand;
-  const baseHooks = options.hooks;
-  const logger: ToolRegistryLogger | undefined = options.log;
-  const registryOptions: DefaultRegistryOptions = baseHooks
-    ? logger
-      ? { hooks: baseHooks, logger }
-      : { hooks: baseHooks }
-    : logger
-      ? { logger }
-      : {};
-  if (!legacy) return createDefaultRegistry(registryOptions);
-  const bashHandler: ToolHandler = async (raw) => {
-    const parsed = parseBashInput(raw);
-    if ("error" in parsed) {
-      return `Error: ${parsed.error}`;
-    }
-    return legacy(parsed.command);
-  };
-  const overrides = [{ name: "bash" as const, handler: bashHandler }];
-  return createDefaultRegistry({ ...registryOptions, overrides });
+  // `log` also carries registry diagnostics, i.e. hook failures.
+  return createDefaultRegistry({ hooks: options.hooks, logger: options.log });
 }
 
 export async function agentLoop(
@@ -89,7 +48,7 @@ export async function agentLoop(
     const results: ToolResultBlockParam[] = [];
     for (const raw of toolCalls) {
       const block = raw as ToolUseBlock;
-      if (isBashBlock(block)) {
+      if (block.name === BASH_TOOL_NAME) {
         const parsed = parseBashInput(block.input);
         if (!("error" in parsed)) {
           log(`\x1b[33m$ ${parsed.command}\x1b[0m`);

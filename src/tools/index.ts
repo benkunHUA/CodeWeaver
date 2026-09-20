@@ -7,16 +7,18 @@ import type {
   ToolRegistryLogger,
   Workspace,
 } from "../types.js";
-import { COMMAND_TIMEOUT_MS, runBash } from "../bash.js";
 import { createWorkspace } from "../workspace.js";
 import { createToolRegistry } from "./registry.js";
+import { bashTool } from "./bashTool.js";
 import { editFileTool, readFileTool, writeFileTool } from "./fileTools.js";
 import { globTool } from "./globTool.js";
 
 export interface DefaultRegistryOptions {
   readonly root?: string;
-  readonly hooks?: ToolHooks;
-  readonly logger?: ToolRegistryLogger;
+  // Explicit `| undefined` keeps callers able to forward optional values
+  // directly under `exactOptionalPropertyTypes`.
+  readonly hooks?: ToolHooks | undefined;
+  readonly logger?: ToolRegistryLogger | undefined;
   readonly overrides?: readonly {
     readonly name: ToolDefinition["name"];
     readonly handler?: ToolHandler;
@@ -89,7 +91,7 @@ export async function createDefaultRegistry(options: DefaultRegistryOptions = {}
     {
       name: "bash",
       schema: TOOL_SCHEMAS[0] as AnthropicTool,
-      handler: async (input) => runBash(input.command, { cwd: workspace.root, timeoutMs: COMMAND_TIMEOUT_MS }),
+      handler: async (input) => bashTool(workspace, input),
     },
     {
       name: "read_file",

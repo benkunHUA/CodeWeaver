@@ -40,10 +40,7 @@ for (const content of [[], [text("")], [text("done")]]) {
   test(`stops without an empty tool-result turn: ${JSON.stringify(content)}`, async () => {
     const { client, requests } = fakeClient([{ content, stop_reason: "tool_use" }]);
     const messages: Conversation = [{ role: "user", content: "hello" }];
-    await agentLoop(messages, {
-      client, model: "test-model",
-      runCommand: async () => assert.fail("Must not execute a command"),
-    });
+    await agentLoop(messages, { client, model: "test-model" });
     assert.equal(requests.length, 1);
     assert.deepEqual(messages, [
       { role: "user", content: "hello" },

@@ -93,7 +93,6 @@ export interface Workspace {
   readonly safePath: (userPath: string) => Promise<string>;
 }
 
-export type CommandRunner = (command: string) => Promise<string>;
 export type Logger = (text: string) => void;
 
 export interface AgentOptions {
@@ -103,6 +102,4 @@ export interface AgentOptions {
   readonly registry?: ToolRegistry;
   readonly hooks?: ToolHooks;
   readonly log?: Logger;
-  /** @deprecated use hooks + registry handlers or mock registry instead; kept for s01 parity tests */
-  readonly runCommand?: CommandRunner;
 }
