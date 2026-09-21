@@ -13,6 +13,7 @@ import { BashTool } from "../src/tools/BashTool.js";
 import { EditFileTool } from "../src/tools/EditFileTool.js";
 import { GlobTool } from "../src/tools/GlobTool.js";
 import { ReadFileTool } from "../src/tools/ReadFileTool.js";
+import { TodoWriteTool } from "../src/tools/TodoWriteTool.js";
 import { WriteFileTool } from "../src/tools/WriteFileTool.js";
 import { ToolRegistry } from "../src/tools/ToolRegistry.js";
 import { createDefaultTools } from "../src/tools/createDefaultTools.js";
@@ -231,6 +232,24 @@ test("tool classes declare the documented name, description and schema", () => {
       properties: { pattern: { type: "string" } },
       required: ["pattern"],
     }],
+    [new TodoWriteTool(), "todo_write", "创建并管理当前编码会话的任务列表。", {
+      type: "object",
+      properties: {
+        todos: {
+          type: "array",
+          maxItems: 20,
+          items: {
+            type: "object",
+            properties: {
+              content: { type: "string", minLength: 1 },
+              status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+            },
+            required: ["content", "status"],
+          },
+        },
+      },
+      required: ["todos"],
+    }],
   ] as const;
   for (const [tool, name, description, expectedSchema] of expected) {
     const schema = tool.toAnthropicSchema();
@@ -246,7 +265,7 @@ test("tool classes declare the documented name, description and schema", () => {
   }
   assert.deepEqual(
     expected.map(([, name]) => name).sort(),
-    ["bash", "edit_file", "glob", "read_file", "write_file"],
+    ["bash", "edit_file", "glob", "read_file", "todo_write", "write_file"],
   );
 });
 
@@ -280,7 +299,7 @@ test("tool classes execute like the previous free functions", async () => {
 
 // --- ToolRegistry / createDefaultTools -------------------------------------
 
-const DEFAULT_TOOL_NAMES = ["bash", "read_file", "write_file", "edit_file", "glob"];
+const DEFAULT_TOOL_NAMES = ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write"];
 
 /** Standalone echo tool registered under `bash`; the name cannot be reused from `EchoTool`. */
 class BashEchoTool extends Tool<{ value: string }> {

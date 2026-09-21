@@ -39,7 +39,7 @@ export class DenyListGate extends PermissionGate {
       kind: "decide",
       decision: {
         allowed: false,
-        reason: `Blocked: '${pattern}' is on the deny list`,
+        reason: `已被拒绝：'${pattern}' 在拒绝列表中`,
         gate: this.name,
       },
     };

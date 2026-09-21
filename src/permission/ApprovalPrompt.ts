@@ -2,11 +2,14 @@ import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline";
 import type { ApprovalPrompt, ApprovalRequest, ApprovalResponse } from "./types.js";
 
-/** What the terminal prompt asks. Kept verbatim so it matches the s03 lesson. */
-export const APPROVAL_QUESTION = "   Allow? [y/N] ";
+/**
+ * What the terminal prompt asks. Chinese on purpose: the CLI diverges from the
+ * English wording the s03 lesson prints.
+ */
+export const APPROVAL_QUESTION = "   是否允许？[y/N] ";
 
 /** Reason reported when approval is impossible (no TTY, or an explicit deny-all). */
-export const NO_INTERACTIVE_TERMINAL = "no interactive terminal";
+export const NO_INTERACTIVE_TERMINAL = "没有交互式终端，无法确认";
 
 const APPROVED_ANSWERS: readonly string[] = ["y", "yes"];
 
@@ -63,14 +66,14 @@ export class ConsoleApprovalPrompt implements ApprovalPrompt {
       return { decision: "deny", reason: NO_INTERACTIVE_TERMINAL };
     }
     try {
-      this.log(`\n\x1b[33m[permission] ${request.reason}\x1b[0m`);
-      this.log(`   Tool: ${request.toolName}(${JSON.stringify(request.input)})`);
+      this.log(`\n\x1b[33m[需要确认] ${request.reason}\x1b[0m`);
+      this.log(`   工具: ${request.toolName}(${JSON.stringify(request.input)})`);
       const ask = this.questionProvider ?? this.question ?? ((promptText: string) => this.readLine(promptText));
       const answer = await ask(APPROVAL_QUESTION);
       // A plain denial carries no reason: the approval gate supplies the default.
       return isApproved(answer) ? { decision: "allow" } : { decision: "deny" };
     } catch (error) {
-      return { decision: "deny", reason: `approval prompt failed: ${errorMessage(error)}` };
+      return { decision: "deny", reason: `征求确认失败：${errorMessage(error)}` };
     }
   }
 
@@ -85,7 +88,7 @@ export class ConsoleApprovalPrompt implements ApprovalPrompt {
           resolve(answer);
         });
         rl.once("close", () => {
-          if (!answered) reject(new Error("input stream ended before an answer"));
+          if (!answered) reject(new Error("输入流在回答前结束"));
         });
       });
     } finally {

@@ -34,7 +34,7 @@ export class PermissionPipeline {
         outcome = await gate.evaluate(context);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return { allowed: false, reason: `permission gate error: ${message}`, gate: gate.name };
+        return { allowed: false, reason: `权限检查出错：${message}`, gate: gate.name };
       }
       if (outcome === undefined) continue;
       if (outcome.kind === "decide") return outcome.decision;
@@ -42,7 +42,7 @@ export class PermissionPipeline {
     }
     // Fail closed: an ask that no gate resolved must never become an allow.
     if (ask !== undefined) {
-      return { allowed: false, reason: "unresolved permission request", gate: "pipeline" };
+      return { allowed: false, reason: "权限请求未决", gate: "pipeline" };
     }
     return { allowed: true, reason: "", gate: "default" };
   }

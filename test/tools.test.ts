@@ -5,9 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMMAND_TIMEOUT_MS, OUTPUT_LIMIT, runBash, sliceCharacters } from "../src/bash.js";
 import { createWorkspace } from "../src/workspace.js";
+import { TODO_STATUSES } from "../src/planning/index.js";
 import { FileLockRegistry } from "../src/tools/core/FileLockRegistry.js";
 import { ToolContext } from "../src/tools/core/ToolContext.js";
 import { ToolRegistry } from "../src/tools/ToolRegistry.js";
+import { TodoWriteTool } from "../src/tools/TodoWriteTool.js";
 import { createDefaultTools } from "../src/tools/createDefaultTools.js";
 
 export function quote(value: string): string {
@@ -285,4 +287,116 @@ test("TR-2.1: bash timeout and error formatting remain aligned with s01", async 
   );
   assert.equal(sliceCharacters("abcdef", 3), "abc");
   assert.equal(OUTPUT_LIMIT, 50_000);
+});
+
+test("TR-2.5: todo_write declares the s05 schema, renders and reports domain errors", async () => {
+  // The declarative keywords (maxItems/enum/properties/required) are part of the
+  // model-facing schema and are pinned verbatim against the s05 tool list.
+  assert.deepEqual(new TodoWriteTool().inputSchema, {
+    type: "object",
+    properties: {
+      todos: {
+        type: "array",
+        maxItems: 20,
+        items: {
+          type: "object",
+          properties: {
+            content: { type: "string", minLength: 1 },
+            status: { type: "string", enum: [...TODO_STATUSES] },
+          },
+          required: ["content", "status"],
+        },
+      },
+    },
+    required: ["todos"],
+  });
+  const schema = new TodoWriteTool().toAnthropicSchema();
+  assert.equal(schema.name, "todo_write");
+  assert.equal(schema.description, "创建并管理当前编码会话的任务列表。");
+
+  const root = await mkdtemp(join(tmpdir(), "cw-tool-todo-"));
+  try {
+    const workspace = await createWorkspace(root);
+    const context = new ToolContext({ workspace, locks: new FileLockRegistry() });
+    const registry = new ToolRegistry({ context });
+    for (const tool of createDefaultTools()) registry.register(tool);
+
+    assert.deepEqual(
+      registry.list().map((tool) => tool.name),
+      ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write"],
+    );
+
+    assert.equal(
+      await registry.invoke("todo_write", {
+        todos: [{ content: "a", status: "pending" }, { content: "b", status: "in_progress" }],
+      }),
+      "[ ] a\n[>] b\n\n(0/2 completed)",
+    );
+
+    // Consecutive calls share the context store, and each call replaces the whole list.
+    assert.equal(
+      await registry.invoke("todo_write", { todos: [{ content: "a", status: "pending" }] }),
+      "[ ] a\n\n(0/1 completed)",
+    );
+    assert.equal(
+      await registry.invoke("todo_write", {
+        todos: [{ content: "a", status: "completed" }, { content: "b", status: "pending" }],
+      }),
+      "[x] a\n[ ] b\n\n(1/2 completed)",
+    );
+    assert.deepEqual(registry.context.todos.list.items, [
+      { content: "a", status: "completed" },
+      { content: "b", status: "pending" },
+    ]);
+
+    // A second context owns an independent store.
+    const otherContext = new ToolContext({ workspace, locks: new FileLockRegistry() });
+    const otherRegistry = new ToolRegistry({ context: otherContext });
+    for (const tool of createDefaultTools()) otherRegistry.register(tool);
+    assert.notEqual(registry.context.todos, otherContext.todos);
+    assert.equal(
+      await otherRegistry.invoke("todo_write", { todos: [{ content: "z", status: "pending" }] }),
+      "[ ] z\n\n(0/1 completed)",
+    );
+    assert.equal(otherContext.todos.list.render(), "[ ] z\n\n(0/1 completed)");
+    assert.equal(registry.context.todos.list.render(), "[x] a\n[ ] b\n\n(1/2 completed)");
+
+    // Domain errors win over the declarative schema keywords: the generic
+    // validator ignores maxItems/enum/required nested inside one item.
+    const tooMany = Array.from({ length: 21 }, (_, index) => ({ content: `t${index}`, status: "pending" }));
+    assert.equal(await registry.invoke("todo_write", { todos: tooMany }), "Error: Max 20 todos allowed");
+    assert.equal(
+      await registry.invoke("todo_write", { todos: [{ content: "a", status: "done" }] }),
+      "Error: todos[0] has invalid status 'done'",
+    );
+    assert.equal(
+      await registry.invoke("todo_write", { todos: [{ content: "", status: "pending" }] }),
+      "Error: todos[0] requires content",
+    );
+    assert.equal(
+      await registry.invoke("todo_write", {
+        todos: [{ content: "a", status: "in_progress" }, { content: "b", status: "in_progress" }],
+      }),
+      "Error: Only one todo can be in_progress at a time",
+    );
+    assert.deepEqual(registry.context.todos.list.items, [
+      { content: "a", status: "completed" },
+      { content: "b", status: "pending" },
+    ]);
+
+    // Only the top-level shape is enforced by the shared validator.
+    assert.equal(
+      await registry.invoke("todo_write", { todos: "not-an-array" }),
+      "Error: Invalid input for todo_write: todo_write.todos must be array",
+    );
+    assert.equal(await registry.invoke("todo_write", {}), "Error: Invalid input for todo_write: todos is required");
+
+    // Content is trimmed, statuses are compared case-insensitively.
+    assert.equal(
+      await registry.invoke("todo_write", { todos: [{ content: "  pad  ", status: "PENDING" }] }),
+      "[ ] pad\n\n(0/1 completed)",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

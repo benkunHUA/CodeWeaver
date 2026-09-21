@@ -3,13 +3,19 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ContentBlock } from "@anthropic-ai/sdk/resources/messages";
-import { AgentLoop } from "../src/agent/AgentLoop.js";
+import type { ContentBlock, ContentBlockParam } from "@anthropic-ai/sdk/resources/messages";
+import { AgentLoop, type ToolRoundReminder } from "../src/agent/AgentLoop.js";
 import { Session } from "../src/agent/Session.js";
 import { ConsoleToolPresenter, SilentToolPresenter, type ToolPresenter } from "../src/agent/ToolPresenter.js";
 import { systemPrompt } from "../src/agent/systemPrompt.js";
 import { HookBus, createDefaultHooks } from "../src/hooks/index.js";
 import { DenyAllApprovalPrompt, createDefaultPermissionPipeline } from "../src/permission/index.js";
+import {
+  TodoReminder,
+  TODO_REMINDER_TEXT,
+  TODO_REMINDER_THRESHOLD,
+  TODO_REMINDER_TOOL,
+} from "../src/planning/index.js";
 import { FileLockRegistry } from "../src/tools/core/FileLockRegistry.js";
 import { Tool } from "../src/tools/core/Tool.js";
 import { ToolContext } from "../src/tools/core/ToolContext.js";
@@ -37,6 +43,9 @@ const unknownTool = (id: string): ContentBlock => ({
 const orderTool = (id: string): ContentBlock => ({
   type: "tool_use", id, name: "order", input: {}, caller: { type: "direct" },
 });
+const todoTool = (id: string): ContentBlock => ({
+  type: "tool_use", id, name: "todo_write", input: {}, caller: { type: "direct" },
+});
 
 /** Default hooks whose only reachable decision is a denial (no TTY approval). */
 function denyingHooks(workspaceRoot: string): HookBus {
@@ -53,7 +62,7 @@ function denyingHooks(workspaceRoot: string): HookBus {
 /**
  * A `bash` replacement injected through `createDefaultTools({ overrides })`.
  * It mirrors the built-in name/description/schema so `registry.schemas()` keeps
- * matching the default five-tool list.
+ * matching the default tool list.
  */
 class BashStubTool extends Tool<{ readonly command: string }> {
   readonly name = "bash";
@@ -223,9 +232,9 @@ test("TR-3.1: serial tools, multiple iterations, next user turn preserve history
     assert.deepEqual(requests[2]?.messages, messages.slice(0, 5));
     assert.equal(requests[0]?.max_tokens, 8000);
     assert.equal(requests[0]?.model, "test-model");
-    assert.equal(requests[0]?.system, "你是一个位于 /workspace 的编程智能体。请使用工具解决问题，直接动手，不要只做解释。");
+    assert.equal(requests[0]?.system, "你是一个位于 /workspace 的编程智能体。开始任何多步骤任务前，先用 todo_write 规划步骤，并在执行过程中持续更新状态。请使用工具解决问题，直接动手，不要只做解释。");
     assert.deepEqual(requests[0]?.tools, registry.schemas());
-    assert.equal(requests[0]?.tools?.length ?? 0, 5);
+    assert.equal(requests[0]?.tools?.length ?? 0, 6);
 
     messages.push({ role: "user", content: "what did you do?" });
     await loop.run(new Session(messages));
@@ -518,4 +527,291 @@ test("a PreToolUse block skips showToolCall and postToolUse and presents the blo
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+/**
+ * Stand-in for the todo tool: the real one belongs to a parallel change, so the
+ * reminder tests only need the registered name and a stable result string.
+ */
+class TodoWriteStubTool extends Tool<{}> {
+  readonly name = "todo_write";
+  readonly description = "Records that the todo tool was used.";
+  readonly inputSchema: JsonSchemaObject = { type: "object", properties: {} };
+
+  protected async run(): Promise<string> {
+    return "No todos.";
+  }
+}
+
+/** Reminder port used to observe when the loop asks for a reminder. */
+class CountingReminder implements ToolRoundReminder {
+  readonly rounds: string[][] = [];
+  begins = 0;
+
+  beginRun(): void {
+    this.begins += 1;
+  }
+
+  afterToolRound(toolNames: readonly string[]): string | undefined {
+    this.rounds.push([...toolNames]);
+    return undefined;
+  }
+}
+
+/** Message content asserted to be a block array, so individual blocks are reachable. */
+function blocksOf(message: Conversation[number] | undefined): ContentBlockParam[] {
+  assert.ok(message, "expected an appended message");
+  assert.ok(Array.isArray(message.content), "expected block content");
+  return message.content;
+}
+
+/** Loop wired with the todo stub plus the injectable reminder port. */
+async function buildReminderLoop(
+  root: string,
+  responses: ModelResponse[],
+  reminder?: ToolRoundReminder,
+  hooks?: HookBus,
+): Promise<AgentLoop> {
+  const { client } = fakeClient(responses);
+  const registry = await buildRegistry(root, { overrides: [new TodoWriteStubTool()] });
+  return new AgentLoop({
+    client,
+    model: "test",
+    system: systemPrompt(),
+    registry,
+    workspaceRoot: root,
+    presenter: new SilentToolPresenter(),
+    ...(hooks === undefined ? {} : { hooks }),
+    ...(reminder === undefined ? {} : { reminder }),
+  });
+}
+
+/** The user messages that carry a tool round, excluding plain-text injections. */
+function toolRounds(messages: Conversation): ContentBlockParam[][] {
+  return messages.flatMap((message) =>
+    message.role === "user" && Array.isArray(message.content) ? [message.content] : [],
+  );
+}
+
+test("TR-4.1: three consecutive rounds without the todo tool inject one reminder", async () => {
+  const responses: ModelResponse[] = [
+    { content: [readTool("r1", "a.txt")], stop_reason: "tool_use" },
+    { content: [readTool("r2", "a.txt")], stop_reason: "tool_use" },
+    { content: [readTool("r3", "a.txt")], stop_reason: "tool_use" },
+    { content: [text("done")], stop_reason: "end_turn" },
+  ];
+  const messages: Conversation = [{ role: "user", content: "hello" }];
+  const root = await mkdtemp(join(tmpdir(), "cw-agent-reminder-"));
+  try {
+    await writeFile(join(root, "a.txt"), "alpha");
+    const loop = await buildReminderLoop(root, responses, new TodoReminder());
+    await loop.run(new Session(messages));
+    assert.equal(messages.length, 8);
+    assert.deepEqual(blocksOf(messages[2]), [
+      { type: "tool_result", tool_use_id: "r1", content: "alpha" },
+    ]);
+    assert.deepEqual(blocksOf(messages[4]), [
+      { type: "tool_result", tool_use_id: "r2", content: "alpha" },
+    ]);
+    // The reminder is appended to the same user message, after its tool_result.
+    assert.deepEqual(blocksOf(messages[6]), [
+      { type: "tool_result", tool_use_id: "r3", content: "alpha" },
+      { type: "text", text: TODO_REMINDER_TEXT },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("TR-4.1: a todo_write round resets the counter, so the reminder moves later", async () => {
+  const responses: ModelResponse[] = [
+    { content: [readTool("r1", "a.txt")], stop_reason: "tool_use" },
+    { content: [todoTool("t1")], stop_reason: "tool_use" },
+    { content: [readTool("r2", "a.txt")], stop_reason: "tool_use" },
+    { content: [readTool("r3", "a.txt")], stop_reason: "tool_use" },
+    { content: [readTool("r4", "a.txt")], stop_reason: "tool_use" },
+    { content: [text("done")], stop_reason: "end_turn" },
+  ];
+  const messages: Conversation = [{ role: "user", content: "hello" }];
+  const root = await mkdtemp(join(tmpdir(), "cw-agent-reminder-reset-"));
+  try {
+    await writeFile(join(root, "a.txt"), "alpha");
+    const loop = await buildReminderLoop(root, responses, new TodoReminder());
+    await loop.run(new Session(messages));
+    assert.equal(messages.length, 12);
+    const reminderRounds = toolRounds(messages).filter((blocks) =>
+      blocks.some((block) => block.type === "text"),
+    );
+    assert.equal(reminderRounds.length, 1, "only the round after three ignored rounds reminds");
+    assert.deepEqual(blocksOf(messages[4]), [
+      { type: "tool_result", tool_use_id: "t1", content: "No todos." },
+    ]);
+    assert.deepEqual(blocksOf(messages[10]), [
+      { type: "tool_result", tool_use_id: "r4", content: "alpha" },
+      { type: "text", text: TODO_REMINDER_TEXT },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("TR-4.2: a blocked todo_write round does not count as a todo update", async () => {
+  const responses: ModelResponse[] = [
+    { content: [todoTool("t1")], stop_reason: "tool_use" },
+    { content: [readTool("r1", "a.txt")], stop_reason: "tool_use" },
+    { content: [readTool("r2", "a.txt")], stop_reason: "tool_use" },
+    { content: [text("done")], stop_reason: "end_turn" },
+  ];
+  const messages: Conversation = [{ role: "user", content: "hello" }];
+  const hooks = new HookBus();
+  hooks.register("PreToolUse", (context) =>
+    context.toolName === "todo_write" ? "Permission denied." : undefined,
+  );
+  const root = await mkdtemp(join(tmpdir(), "cw-agent-reminder-blocked-"));
+  try {
+    await writeFile(join(root, "a.txt"), "alpha");
+    const loop = await buildReminderLoop(root, responses, new TodoReminder(), hooks);
+    await loop.run(new Session(messages));
+    assert.deepEqual(blocksOf(messages[2]), [
+      { type: "tool_result", tool_use_id: "t1", content: "Permission denied." },
+    ]);
+    assert.deepEqual(blocksOf(messages[4]), [
+      { type: "tool_result", tool_use_id: "r1", content: "alpha" },
+    ]);
+    // Three rounds counted, because the blocked todo call never executed.
+    assert.deepEqual(blocksOf(messages[6]), [
+      { type: "tool_result", tool_use_id: "r2", content: "alpha" },
+      { type: "text", text: TODO_REMINDER_TEXT },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("TR-4.2: beginRun clears the counter between questions on the same loop", async () => {
+  const responses: ModelResponse[] = [
+    { content: [readTool("r1", "a.txt")], stop_reason: "tool_use" },
+    { content: [readTool("r2", "a.txt")], stop_reason: "tool_use" },
+    { content: [text("first answer")], stop_reason: "end_turn" },
+    { content: [readTool("r3", "a.txt")], stop_reason: "tool_use" },
+    { content: [text("second answer")], stop_reason: "end_turn" },
+  ];
+  const root = await mkdtemp(join(tmpdir(), "cw-agent-reminder-runs-"));
+  try {
+    await writeFile(join(root, "a.txt"), "alpha");
+    const loop = await buildReminderLoop(root, responses, new TodoReminder());
+    const first: Conversation = [{ role: "user", content: "hello" }];
+    await loop.run(new Session(first));
+    assert.equal(
+      toolRounds(first).filter((blocks) => blocks.some((block) => block.type === "text")).length,
+      0,
+      "two ignored rounds stay below the threshold",
+    );
+
+    const second: Conversation = [{ role: "user", content: "again" }];
+    await loop.run(new Session(second));
+    // Without the run reset this round would be the third consecutive one.
+    assert.deepEqual(toolRounds(second), [
+      [{ type: "tool_result", tool_use_id: "r3", content: "alpha" }],
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("TR-4.3: a round without tool calls never reaches afterToolRound", async () => {
+  const responses: ModelResponse[] = [
+    { content: [readTool("r1", "a.txt")], stop_reason: "tool_use" },
+    { content: [text("thinking")], stop_reason: "end_turn" },
+    { content: [readTool("r2", "a.txt")], stop_reason: "tool_use" },
+    { content: [text("done")], stop_reason: "end_turn" },
+  ];
+  const messages: Conversation = [{ role: "user", content: "hello" }];
+  const hooks = new HookBus();
+  let stops = 0;
+  hooks.register("Stop", () => {
+    stops += 1;
+    return stops === 1 ? "keep going" : undefined;
+  });
+  const reminder = new CountingReminder();
+  const root = await mkdtemp(join(tmpdir(), "cw-agent-reminder-notools-"));
+  try {
+    await writeFile(join(root, "a.txt"), "alpha");
+    const loop = await buildReminderLoop(root, responses, reminder, hooks);
+    await loop.run(new Session(messages));
+    assert.equal(reminder.begins, 1);
+    assert.deepEqual(reminder.rounds, [["read_file"], ["read_file"]]);
+    assert.equal(stops, 2, "the text-only round still exits through Stop");
+    assert.deepEqual(toolRounds(messages), [
+      [{ type: "tool_result", tool_use_id: "r1", content: "alpha" }],
+      [{ type: "tool_result", tool_use_id: "r2", content: "alpha" }],
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("TR-4.3: without the reminder port every round stays tool_result-only", async () => {
+  const responses: ModelResponse[] = [
+    { content: [readTool("r1", "a.txt")], stop_reason: "tool_use" },
+    { content: [readTool("r2", "a.txt")], stop_reason: "tool_use" },
+    { content: [readTool("r3", "a.txt")], stop_reason: "tool_use" },
+    { content: [readTool("r4", "a.txt")], stop_reason: "tool_use" },
+    { content: [text("done")], stop_reason: "end_turn" },
+  ];
+  const messages: Conversation = [{ role: "user", content: "hello" }];
+  const root = await mkdtemp(join(tmpdir(), "cw-agent-reminder-off-"));
+  try {
+    await writeFile(join(root, "a.txt"), "alpha");
+    const loop = await buildReminderLoop(root, responses);
+    await loop.run(new Session(messages));
+    assert.deepEqual(toolRounds(messages), ["r1", "r2", "r3", "r4"].map((id) => [
+      { type: "tool_result", tool_use_id: id, content: "alpha" },
+    ]));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("TodoReminder: the third ignored round fires once and resets the counter", () => {
+  const reminder = new TodoReminder();
+  assert.equal(TODO_REMINDER_THRESHOLD, 3);
+  assert.equal(TODO_REMINDER_TOOL, "todo_write");
+  assert.equal(reminder.afterToolRound(["read_file"]), undefined);
+  assert.equal(reminder.afterToolRound(["glob"]), undefined);
+  assert.equal(reminder.afterToolRound(["bash"]), TODO_REMINDER_TEXT);
+  assert.equal(reminder.afterToolRound(["bash"]), undefined, "firing resets the counter");
+  assert.equal(reminder.afterToolRound(["bash"]), undefined);
+  assert.equal(reminder.afterToolRound(["bash"]), TODO_REMINDER_TEXT);
+});
+
+test("TodoReminder: the todo tool and beginRun both reset the counter", () => {
+  const reminder = new TodoReminder();
+  assert.equal(reminder.afterToolRound(["bash"]), undefined);
+  assert.equal(reminder.afterToolRound(["todo_write", "read_file"]), undefined);
+  assert.equal(reminder.afterToolRound(["bash"]), undefined);
+  assert.equal(reminder.afterToolRound(["bash"]), undefined);
+  assert.equal(reminder.afterToolRound(["bash"]), TODO_REMINDER_TEXT);
+
+  const fresh = new TodoReminder();
+  assert.equal(fresh.afterToolRound(["bash"]), undefined);
+  assert.equal(fresh.afterToolRound(["bash"]), undefined);
+  fresh.beginRun();
+  assert.equal(fresh.afterToolRound(["bash"]), undefined, "beginRun dropped the pending rounds");
+  assert.equal(fresh.afterToolRound(["bash"]), undefined);
+  assert.equal(fresh.afterToolRound(["bash"]), TODO_REMINDER_TEXT);
+});
+
+test("TodoReminder: threshold, toolName and text are injectable", () => {
+  const fast = new TodoReminder({ threshold: 2 });
+  assert.equal(fast.afterToolRound(["bash"]), undefined);
+  assert.equal(fast.afterToolRound(["bash"]), TODO_REMINDER_TEXT);
+
+  const custom = new TodoReminder({ toolName: "plan_write", text: "<reminder>custom</reminder>" });
+  assert.equal(custom.afterToolRound(["todo_write"]), undefined);
+  assert.equal(custom.afterToolRound(["todo_write"]), undefined);
+  assert.equal(custom.afterToolRound(["plan_write"]), undefined, "the configured name resets");
+  assert.equal(custom.afterToolRound(["bash"]), undefined);
+  assert.equal(custom.afterToolRound(["bash"]), undefined);
+  assert.equal(custom.afterToolRound(["bash"]), "<reminder>custom</reminder>");
 });

@@ -9,6 +9,7 @@ import {
   createLargeOutputHook,
   createPermissionHook,
   createSessionSummaryHook,
+  createTodoPlanHook,
 } from "../src/hooks/index.js";
 import type { PermissionChecker } from "../src/hooks/index.js";
 import type { HookContexts } from "../src/hooks/index.js";
@@ -241,7 +242,7 @@ test("createPermissionHook blocks with the exact s03 tool-result text", async ()
       await bus.trigger("PreToolUse", { toolName: "bash", input: { command: "rm -rf /" }, workspaceRoot: root }),
       "Permission denied.",
     );
-    assert.deepEqual(logs, ["\n\x1b[31m[blocked] rm -rf /\x1b[0m"]);
+    assert.deepEqual(logs, ["\n\x1b[31m[已阻止] rm -rf /\x1b[0m"]);
 
     const allowedLogs: string[] = [];
     const allowBus = new HookBus();
@@ -277,7 +278,47 @@ test("createLargeOutputHook warns only above the threshold", async () => {
   bus.register("PostToolUse", createLargeOutputHook({ log: (message) => logs.push(message), threshold: 4 }));
   await bus.trigger("PostToolUse", { toolName: "bash", input: {}, result: "ok", workspaceRoot: "/ws" });
   await bus.trigger("PostToolUse", { toolName: "bash", input: {}, result: "12345", workspaceRoot: "/ws" });
-  assert.deepEqual(logs, ["\x1b[33m[HOOK] Large output from bash: 5 chars\x1b[0m"]);
+  assert.deepEqual(logs, ["\x1b[33m[诊断] bash 输出较大：5 字符\x1b[0m"]);
+});
+
+test("createTodoPlanHook prints the yellow plan header for a successful todo_write", async () => {
+  const logs: string[] = [];
+  const handler = createTodoPlanHook({ log: (message) => logs.push(message) });
+  assert.equal(
+    await handler({
+      toolName: "todo_write",
+      input: {},
+      result: "[ ] a\n\n(0/1 completed)",
+      workspaceRoot: "/ws",
+    }),
+    undefined,
+  );
+  assert.deepEqual(logs, ["\n\x1b[33m## 当前任务\x1b[0m\n[ ] a\n\n(0/1 completed)"]);
+});
+
+test("createTodoPlanHook stays silent when todo_write fails", async () => {
+  const logs: string[] = [];
+  const handler = createTodoPlanHook({ log: (message) => logs.push(message) });
+  assert.equal(
+    await handler({
+      toolName: "todo_write",
+      input: {},
+      result: "Error: Max 20 todos allowed",
+      workspaceRoot: "/ws",
+    }),
+    undefined,
+  );
+  assert.deepEqual(logs, []);
+});
+
+test("createTodoPlanHook ignores other tools", async () => {
+  const logs: string[] = [];
+  const handler = createTodoPlanHook({ log: (message) => logs.push(message) });
+  assert.equal(
+    await handler({ toolName: "bash", input: {}, result: "[ ] a", workspaceRoot: "/ws" }),
+    undefined,
+  );
+  assert.deepEqual(logs, []);
 });
 
 test("createSessionSummaryHook counts tool_result blocks safely", async () => {
@@ -295,7 +336,7 @@ test("createSessionSummaryHook counts tool_result blocks safely", async () => {
   ];
   const handler = createSessionSummaryHook({ log: (message) => logs.push(message) });
   assert.equal(await handler({ messages, workspaceRoot: "/ws" }), undefined);
-  assert.deepEqual(logs, ["\x1b[90m[HOOK] Stop: session used 2 tool calls\x1b[0m"]);
+  assert.deepEqual(logs, ["\x1b[90m[诊断] 会话结束：共 2 次工具调用\x1b[0m"]);
 });
 
 test("createDefaultHooks wires the s04 order and emits hook logs", async () => {
@@ -311,7 +352,7 @@ test("createDefaultHooks wires the s04 order and emits hook logs", async () => {
     assert.deepEqual(bus.listHandlers("UserPromptSubmit"), ["workspace-context"]);
     assert.deepEqual(bus.listHandlers("PreToolUse"), ["permission", "log"]);
     assert.ok(bus.listHandlers("PreToolUse").length >= 2);
-    assert.deepEqual(bus.listHandlers("PostToolUse"), ["large-output"]);
+    assert.deepEqual(bus.listHandlers("PostToolUse"), ["large-output", "todo-plan"]);
     assert.deepEqual(bus.listHandlers("Stop"), ["session-summary"]);
 
     assert.equal(await bus.trigger("UserPromptSubmit", { query: "hi", workspaceRoot: root }), undefined);
@@ -325,9 +366,9 @@ test("createDefaultHooks wires the s04 order and emits hook logs", async () => {
     );
     assert.equal(await bus.trigger("Stop", { messages: [], workspaceRoot: root }), undefined);
     assert.deepEqual(logs, [
-      `\x1b[90m[HOOK] UserPromptSubmit: working in ${root}\x1b[0m`,
-      "\x1b[90m[HOOK] bash(...)\x1b[0m",
-      "\x1b[90m[HOOK] Stop: session used 0 tool calls\x1b[0m",
+      `\x1b[90m[诊断] 工作目录：${root}\x1b[0m`,
+      "\x1b[90m[诊断] 调用 bash(...)\x1b[0m",
+      "\x1b[90m[诊断] 会话结束：共 0 次工具调用\x1b[0m",
     ]);
   } finally {
     await rm(root, { recursive: true, force: true });

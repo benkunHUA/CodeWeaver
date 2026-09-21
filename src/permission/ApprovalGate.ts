@@ -1,7 +1,7 @@
 import { PermissionGate } from "./PermissionGate.js";
 import type { ApprovalPrompt, ApprovalResponse, GateContext, GateOutcome } from "./types.js";
 
-const DENIED_BY_USER = "Permission denied by user";
+const DENIED_BY_USER = "用户拒绝";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -40,7 +40,7 @@ export class ApprovalGate extends PermissionGate {
         kind: "decide",
         decision: {
           allowed: false,
-          reason: `permission gate error: ${errorMessage(error)}`,
+          reason: `权限检查出错：${errorMessage(error)}`,
           gate: this.name,
         },
       };

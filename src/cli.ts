@@ -74,6 +74,7 @@ async function main(): Promise<void> {
       workspaceRoot: runtime.workspaceRoot,
       hooks: runtime.hooks,
       presenter: new ConsoleToolPresenter({ log: console.log }),
+      reminder: runtime.reminder,
     });
     await runCli({
       loop,

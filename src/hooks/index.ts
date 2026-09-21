@@ -4,6 +4,7 @@ import {
   createLogHook,
   createPermissionHook,
   createSessionSummaryHook,
+  createTodoPlanHook,
   createWorkspaceContextHook,
 } from "./handlers.js";
 import type { PermissionChecker } from "./types.js";
@@ -15,6 +16,7 @@ export {
   createLogHook,
   createPermissionHook,
   createSessionSummaryHook,
+  createTodoPlanHook,
   createWorkspaceContextHook,
 };
 export type {
@@ -41,6 +43,8 @@ export interface DefaultHooksOptions {
 }
 
 // Composition root: the s04 registration order, with permission checked before logging.
+// s05 appends the todo-plan printer after large-output so a successful todo_write
+// also renders the current task list in the terminal.
 export function createDefaultHooks(options: DefaultHooksOptions): HookBus {
   const log = options.log ?? console.log;
   const bus = new HookBus({ logger: options.logger });
@@ -50,6 +54,7 @@ export function createDefaultHooks(options: DefaultHooksOptions): HookBus {
   bus.register("PostToolUse", createLargeOutputHook({ log, threshold: options.largeOutputThreshold }), {
     name: "large-output",
   });
+  bus.register("PostToolUse", createTodoPlanHook({ log }), { name: "todo-plan" });
   bus.register("Stop", createSessionSummaryHook({ log }), { name: "session-summary" });
   return bus;
 }

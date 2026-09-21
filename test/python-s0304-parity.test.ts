@@ -296,6 +296,18 @@ function finalAnswer(): ModelResponse {
 
 // -- 1) hard deny list (s03) --
 
+/**
+ * Translates the lesson's English deny reason into the Chinese text the production
+ * gate prints. This is an intentional divergence (the CLI is Chinese-only), so the
+ * mapping is stated here instead of silently dropping the reason comparison. An
+ * unexpected lesson wording fails loudly rather than passing through unchanged.
+ */
+function productionDenyReason(lessonMessage: string): string {
+  const match = /^Blocked: '(.+)' is on the deny list$/.exec(lessonMessage);
+  assert.ok(match, `unexpected lesson deny reason: ${JSON.stringify(lessonMessage)}`);
+  return `已被拒绝：'${match[1]}' 在拒绝列表中`;
+}
+
 test("s03 Python parity: hard deny list decisions match DenyListGate", optional, async () => {
   const constants = s03Constants();
   assert.deepEqual(constants.denyList, [...DEFAULT_DENY_LIST], "production keeps the s03 deny list");
@@ -322,7 +334,7 @@ test("s03 Python parity: hard deny list decisions match DenyListGate", optional,
     actual,
     expected.map((message) => (message === null ? undefined : {
       kind: "decide",
-      decision: { allowed: false, reason: message, gate: "deny-list" },
+      decision: { allowed: false, reason: productionDenyReason(message), gate: "deny-list" },
     })),
   );
 
@@ -357,7 +369,8 @@ test("s03 Python parity: destructive-command decision matches DestructiveCommand
   ];
   const expected = runS03("destructive", { commands }) as { regex: boolean[]; rule: boolean[] };
   const rule = new DestructiveCommandRule();
-  assert.equal(rule.message, s03Constants().bashRuleMessage, "ask reason text is the s03 message");
+  // Intentional divergence: the production CLI prints Chinese, the lesson prints English.
+  assert.notEqual(rule.message, s03Constants().bashRuleMessage);
 
   assert.deepEqual(
     commands.map((command) => rule.evaluate(request("bash", { command })) === "ask"),
@@ -394,7 +407,7 @@ test("s03 Python parity: denial tool_result text equals the s03 literal", option
       approval: new DenyAllApprovalPrompt(),
     });
     assert.deepEqual(await pipeline.check(request("bash", { command: "sudo ls" }, root)), {
-      allowed: false, reason: "Blocked: 'sudo' is on the deny list", gate: "deny-list",
+      allowed: false, reason: "已被拒绝：'sudo' 在拒绝列表中", gate: "deny-list",
     });
     assert.deepEqual(await pipeline.check(request("bash", { command: "rm temp.txt" }, root)), {
       allowed: false, reason: NO_INTERACTIVE_TERMINAL, gate: "approval",
@@ -495,18 +508,31 @@ test("s04 Python parity: hook events, registration order and session summary", o
       log: () => {},
       logger: () => {},
     });
+    // s05 appends `todo-plan` after `large-output` on PostToolUse, so the
+    // production list holds the s04 handlers plus exactly one extra handler.
+    const s04PostToolUse = (expected.hooks.PostToolUse ?? []).map(
+      (name) => HOOK_NAMES[name] as string,
+    );
+    assert.ok(!s04PostToolUse.includes("todo-plan"), "s04 does not register todo-plan");
     for (const event of HOOK_EVENTS) {
       const pythonHandlers = expected.hooks[event];
       assert.ok(pythonHandlers, event);
+      const s04Names = pythonHandlers.map((name) => HOOK_NAMES[name] as string);
       assert.deepEqual(
-        bus.listHandlers(event),
-        pythonHandlers.map((name) => HOOK_NAMES[name]),
-        `${event} handler order`,
+        bus.listHandlers(event).filter((name) => s04Names.includes(name)),
+        s04Names,
+        `${event} keeps the s04 handler order`,
       );
     }
+    assert.deepEqual(
+      bus.listHandlers("PostToolUse").filter((name) => !s04PostToolUse.includes(name)),
+      ["todo-plan"],
+      "s05 adds exactly one PostToolUse handler: todo-plan",
+    );
     assert.equal(
       HOOK_EVENTS.reduce((total, event) => total + bus.listHandlers(event).length, 0),
-      5,
+      6,
+      "five s04 hooks plus the s05 todo-plan hook",
     );
     // The permission handler must win the race against the logger on PreToolUse.
     const order = bus.listHandlers("PreToolUse");
@@ -520,7 +546,7 @@ test("s04 Python parity: hook events, registration order and session summary", o
     assert.equal(pythonCount, 2);
     const logs: string[] = [];
     await createSessionSummaryHook({ log: (line) => logs.push(line) })({ messages, workspaceRoot: root });
-    const productionCount = Number(/session used (\d+) tool calls/.exec(logs[0] ?? "")?.[1]);
+    const productionCount = Number(/共 (\d+) 次工具调用/.exec(logs[0] ?? "")?.[1]);
     assert.equal(productionCount, pythonCount);
 
     // Documented lesson drift: s04 dropped the last s03 deny pattern while
@@ -557,7 +583,7 @@ test("s03 divergences: workspace escape asks in the lesson, denies in production
     // production: the jail is a hard boundary, so the rule denies outright.
     const rule = new WorkspaceBoundaryRule();
     assert.equal(rule.evaluate(request("write_file", escaping, root)), "deny");
-    assert.equal(rule.message, "Access outside workspace");
+    assert.equal(rule.message, "访问工作区之外的路径");
     // The wording is an intentional, separately asserted divergence.
     assert.notEqual(rule.message, constants.workspaceRuleMessage);
 
@@ -595,7 +621,7 @@ test("s03 divergences: non-interactive approval fails closed instead of raising"
     assert.deepEqual(decision, {
       allowed: false, reason: NO_INTERACTIVE_TERMINAL, gate: "approval",
     });
-    assert.equal(NO_INTERACTIVE_TERMINAL, "no interactive terminal");
+    assert.equal(NO_INTERACTIVE_TERMINAL, "没有交互式终端，无法确认");
     assert.equal(asked, false, "a non-interactive prompt never reads stdin");
   } finally {
     await rm(root, { recursive: true, force: true });

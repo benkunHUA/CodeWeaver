@@ -1,4 +1,4 @@
-import type { ContentBlock, ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages";
+import type { ContentBlock, ContentBlockParam } from "@anthropic-ai/sdk/resources/messages";
 import type { Conversation } from "../types.js";
 
 export class Session {
@@ -18,7 +18,7 @@ export class Session {
     this.#messages.push({ role: "assistant", content });
   }
 
-  appendToolResults(results: readonly ToolResultBlockParam[]): void {
+  appendToolResults(results: readonly ContentBlockParam[]): void {
     this.#messages.push({ role: "user", content: [...results] });
   }
 

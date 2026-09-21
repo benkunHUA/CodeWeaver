@@ -11,8 +11,12 @@ import { Session } from "../src/agent/Session.js";
 import { ConsoleToolPresenter } from "../src/agent/ToolPresenter.js";
 import { systemPrompt } from "../src/agent/systemPrompt.js";
 import { BashTool } from "../src/tools/BashTool.js";
-import { createDefaultTools } from "../src/tools/createDefaultTools.js";
+import { EditFileTool } from "../src/tools/EditFileTool.js";
+import { GlobTool } from "../src/tools/GlobTool.js";
+import { ReadFileTool } from "../src/tools/ReadFileTool.js";
+import { WriteFileTool } from "../src/tools/WriteFileTool.js";
 import { FileLockRegistry } from "../src/tools/core/FileLockRegistry.js";
+import type { Tool } from "../src/tools/core/Tool.js";
 import { ToolContext } from "../src/tools/core/ToolContext.js";
 import { ToolRegistry } from "../src/tools/ToolRegistry.js";
 import { createWorkspace } from "../src/workspace.js";
@@ -37,6 +41,15 @@ class BashStubTool extends BashTool {
     this.#recordCommand(input.command);
     return `result:${input.command}`;
   }
+}
+
+/**
+ * The s02 request contract has exactly five tools. `todo_write` was added in
+ * s05, so the registries compared against the lesson are built explicitly here
+ * instead of using `createDefaultTools()`, which now returns six.
+ */
+function s02Tools(bash: Tool<unknown> = new BashTool()): Tool<unknown>[] {
+  return [bash, new ReadFileTool(), new WriteFileTool(), new EditFileTool(), new GlobTool()];
 }
 
 const source = fileURLToPath(new URL("../../s02_tool_use/code.py", import.meta.url));
@@ -169,7 +182,7 @@ async function compareTools(root: string, calls: readonly Call[], extra: Record<
   const registry = new ToolRegistry({
     context: new ToolContext({ workspace, locks: new FileLockRegistry() }),
   });
-  for (const tool of createDefaultTools()) registry.register(tool);
+  for (const tool of s02Tools()) registry.register(tool);
   const actual: string[] = [];
   for (const call of calls) actual.push(await registry.invoke(call.name, call.kwargs));
   assert.deepEqual(await snapshot(root), expectedFiles, "filesystem effects");
@@ -429,9 +442,9 @@ test("s02 Python parity: complete requests, history and dispatch order; explicit
             if (sample.cliHook) actual.logs += `\x1b[35m> ${name}\x1b[0m\n`;
           } },
         });
-        for (const tool of createDefaultTools({
-          overrides: [new BashStubTool((command) => { actual.commands.push(command); })],
-        })) registry.register(tool);
+        for (const tool of s02Tools(
+          new BashStubTool((command) => { actual.commands.push(command); }),
+        )) registry.register(tool);
         // The old `log` collector lives on the presenter now: it prints the bash
         // `$ command` line and the 200 code point result previews, including the
         // blocked results. The registry logger is deliberately left unset, just

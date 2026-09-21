@@ -1,6 +1,6 @@
 import type {
   ContentBlock,
-  ToolResultBlockParam,
+  ContentBlockParam,
   ToolUseBlock,
 } from "@anthropic-ai/sdk/resources/messages";
 import type { HookBus } from "../hooks/HookBus.js";
@@ -19,6 +19,15 @@ export interface AgentLoopOptions {
   readonly hooks?: HookBus | undefined;
   readonly presenter?: ToolPresenter | undefined;
   readonly maxTokens?: number | undefined;
+  readonly reminder?: ToolRoundReminder | undefined;
+}
+
+/** Per-round reminder schedule; the loop owns no tool-specific knowledge. */
+export interface ToolRoundReminder {
+  /** Called once at the start of every run() so state cannot leak across questions. */
+  beginRun(): void;
+  /** Called after a round of executed tools; returns the text to append, if any. */
+  afterToolRound(toolNames: readonly string[]): string | undefined;
 }
 
 const DEFAULT_MAX_TOKENS = 8000;
@@ -27,6 +36,9 @@ const DEFAULT_MAX_TOKENS = 8000;
  * The agentic turn loop: request, append, dispatch tool calls serially, then
  * feed the results back. Hook triggering stays in this class because a hook's
  * return value changes control flow (PreToolUse blocks, Stop continues).
+ *
+ * Reminder scheduling is a port: the loop only decides *when* to ask and where
+ * to append the injected text, while the injected strategy lives outside.
  */
 export class AgentLoop {
   readonly #client: ModelClient;
@@ -37,6 +49,7 @@ export class AgentLoop {
   readonly #hooks: HookBus | undefined;
   readonly #presenter: ToolPresenter;
   readonly #maxTokens: number;
+  readonly #reminder: ToolRoundReminder | undefined;
 
   constructor(options: AgentLoopOptions) {
     this.#client = options.client;
@@ -47,9 +60,11 @@ export class AgentLoop {
     this.#hooks = options.hooks;
     this.#presenter = options.presenter ?? new ConsoleToolPresenter();
     this.#maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
+    this.#reminder = options.reminder;
   }
 
   async run(session: Session): Promise<void> {
+    this.#reminder?.beginRun();
     while (true) {
       const response = await this.#client.messages.create({
         model: this.#model,
@@ -76,7 +91,8 @@ export class AgentLoop {
         return;
       }
 
-      const results: ToolResultBlockParam[] = [];
+      const results: ContentBlockParam[] = [];
+      const executed: string[] = [];
       for (const block of toolCalls) {
         const blocked = await this.#hooks?.trigger("PreToolUse", {
           toolName: block.name,
@@ -93,6 +109,7 @@ export class AgentLoop {
           continue;
         }
         this.#presenter.showToolCall(block.name, block.input);
+        executed.push(block.name);
         const output = await this.#registry.invoke(block.name, block.input);
         await this.#hooks?.trigger("PostToolUse", {
           toolName: block.name,
@@ -107,6 +124,8 @@ export class AgentLoop {
           content: output,
         });
       }
+      const reminder = this.#reminder?.afterToolRound(executed);
+      if (reminder !== undefined) results.push({ type: "text", text: reminder });
       session.appendToolResults(results);
     }
   }

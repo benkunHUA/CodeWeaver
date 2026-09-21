@@ -3,6 +3,8 @@ import type { HookHandler, PermissionChecker } from "./types.js";
 
 const DEFAULT_LARGE_OUTPUT_THRESHOLD = 100_000;
 
+export const TODO_PLAN_TOOL_NAME = "todo_write";
+
 export interface HookLoggerOptions {
   readonly log?: ((message: string) => void) | undefined;
 }
@@ -42,7 +44,7 @@ export function createPermissionHook(
   return async ({ toolName, input, workspaceRoot }) => {
     const result = await checker.check({ toolName, input: asRecord(input), workspaceRoot });
     if (result.allowed === false) {
-      log(`\n\x1b[31m[blocked] ${result.reason}\x1b[0m`);
+      log(`\n\x1b[31m[已阻止] ${result.reason}\x1b[0m`);
       return "Permission denied.";
     }
     return undefined;
@@ -53,7 +55,7 @@ export function createPermissionHook(
 export function createLogHook(options: HookLoggerOptions = {}): HookHandler<"PreToolUse"> {
   const log = options.log ?? console.log;
   return ({ toolName }) => {
-    log(`\x1b[90m[HOOK] ${toolName}(...)\x1b[0m`);
+    log(`\x1b[90m[诊断] 调用 ${toolName}(...)\x1b[0m`);
   };
 }
 
@@ -63,8 +65,19 @@ export function createLargeOutputHook(options: LargeOutputHookOptions = {}): Hoo
   const threshold = options.threshold ?? DEFAULT_LARGE_OUTPUT_THRESHOLD;
   return ({ toolName, result }) => {
     if (result.length > threshold) {
-      log(`\x1b[33m[HOOK] Large output from ${toolName}: ${result.length} chars\x1b[0m`);
+      log(`\x1b[33m[诊断] ${toolName} 输出较大：${result.length} 字符\x1b[0m`);
     }
+  };
+}
+
+// PostToolUse: print the plan list after a successful todo_write, like the lesson does.
+export function createTodoPlanHook(options: HookLoggerOptions = {}): HookHandler<"PostToolUse"> {
+  const log = options.log ?? console.log;
+  return ({ toolName, result }) => {
+    if (toolName !== TODO_PLAN_TOOL_NAME) return undefined;
+    if (result.startsWith("Error:")) return undefined;
+    log(`\n\x1b[33m## 当前任务\x1b[0m\n${result}`);
+    return undefined;
   };
 }
 
@@ -72,7 +85,7 @@ export function createLargeOutputHook(options: LargeOutputHookOptions = {}): Hoo
 export function createSessionSummaryHook(options: HookLoggerOptions = {}): HookHandler<"Stop"> {
   const log = options.log ?? console.log;
   return ({ messages }) => {
-    log(`\x1b[90m[HOOK] Stop: session used ${countToolResults(messages)} tool calls\x1b[0m`);
+    log(`\x1b[90m[诊断] 会话结束：共 ${countToolResults(messages)} 次工具调用\x1b[0m`);
   };
 }
 
@@ -80,6 +93,6 @@ export function createSessionSummaryHook(options: HookLoggerOptions = {}): HookH
 export function createWorkspaceContextHook(options: HookLoggerOptions = {}): HookHandler<"UserPromptSubmit"> {
   const log = options.log ?? console.log;
   return ({ workspaceRoot }) => {
-    log(`\x1b[90m[HOOK] UserPromptSubmit: working in ${workspaceRoot}\x1b[0m`);
+    log(`\x1b[90m[诊断] 工作目录：${workspaceRoot}\x1b[0m`);
   };
 }

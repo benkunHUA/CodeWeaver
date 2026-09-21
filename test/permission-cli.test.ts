@@ -157,13 +157,13 @@ test("permission path 1: an interactive denial reports Permission denied. and le
     // The user was actually asked, with the s03 banner and question.
     assert.equal(asked.length, 1);
     assert.equal(asked[0], APPROVAL_QUESTION);
-    assert.match(asked[0] ?? "", /Allow\? \[y\/N\]/);
+    assert.match(asked[0] ?? "", /是否允许？\[y\/N\]/);
     assert.ok(
-      logs.some((line) => line.includes("[permission] Potentially destructive command")),
+      logs.some((line) => line.includes("[需要确认] 可能具有破坏性的命令")),
       `expected the approval banner, got ${JSON.stringify(logs)}`,
     );
     assert.ok(
-      logs.some((line) => line.includes("[blocked] Permission denied by user")),
+      logs.some((line) => line.includes("[已阻止] 用户拒绝")),
       `expected the denial to be reported, got ${JSON.stringify(logs)}`,
     );
     // A denied call must never touch the workspace.
@@ -195,7 +195,7 @@ test("permission path 2: an interactive approval really executes the destructive
     assert.equal(asked.length, 1);
     assert.equal(asked[0], APPROVAL_QUESTION);
     assert.ok(
-      logs.some((line) => line.includes("[permission] Potentially destructive command")),
+      logs.some((line) => line.includes("[需要确认] 可能具有破坏性的命令")),
       `expected the approval banner, got ${JSON.stringify(logs)}`,
     );
     assert.ok(
@@ -249,8 +249,8 @@ test("permission path 3: the real CLI without a TTY auto-denies instead of waiti
     assert.match(result.stdout, /CodeWeaver >> /);
     assert.match(result.stdout, /输入问题后按回车发送，输入 q 退出。/);
     // Without a TTY the approval gate denies immediately: no prompt, no read.
-    assert.ok(!result.stdout.includes("Allow? [y/N]"), result.stdout);
-    assert.match(result.stdout, /\[blocked\] no interactive terminal/);
+    assert.ok(!result.stdout.includes("是否允许？[y/N]"), result.stdout);
+    assert.match(result.stdout, /\[已阻止\] 没有交互式终端，无法确认/);
 
     assert.equal(bodies.length, 2, "one blocked tool turn, then the closing answer");
     const messages: unknown = (bodies[1] as { readonly messages?: unknown }).messages;
@@ -280,7 +280,7 @@ test("ConsoleApprovalPrompt prefers an injected question provider over stdin", a
 
   assert.deepEqual(
     await approving.request({
-      toolName: "bash", input: { command: "rm x" }, reason: "Potentially destructive command",
+      toolName: "bash", input: { command: "rm x" }, reason: "可能具有破坏性的命令",
     }),
     { decision: "allow" },
   );

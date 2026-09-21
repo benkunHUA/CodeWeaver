@@ -128,6 +128,6 @@ test("ConsoleToolPresenter defaults to console.log", () => {
 test("systemPrompt keeps the migrated wording unchanged", () => {
   assert.equal(
     systemPrompt("/workspace"),
-    "你是一个位于 /workspace 的编程智能体。请使用工具解决问题，直接动手，不要只做解释。",
+    "你是一个位于 /workspace 的编程智能体。开始任何多步骤任务前，先用 todo_write 规划步骤，并在执行过程中持续更新状态。请使用工具解决问题，直接动手，不要只做解释。",
   );
 });

@@ -83,7 +83,7 @@ for (const pattern of DEFAULT_DENY_LIST) {
       kind: "decide",
       decision: {
         allowed: false,
-        reason: `Blocked: '${pattern}' is on the deny list`,
+        reason: `已被拒绝：'${pattern}' 在拒绝列表中`,
         gate: "deny-list",
       },
     });
@@ -96,7 +96,7 @@ test("DenyListGate reports the first matching pattern and ignores other tools", 
     kind: "decide",
     decision: {
       allowed: false,
-      reason: "Blocked: 'sudo' is on the deny list",
+      reason: "已被拒绝：'sudo' 在拒绝列表中",
       gate: "deny-list",
     },
   });
@@ -113,7 +113,7 @@ test("DenyListGate accepts a custom deny list", async () => {
   const gate = new DenyListGate(["nope"]);
   assert.deepEqual(await gate.evaluate(context("bash", { command: "echo nope" })), {
     kind: "decide",
-    decision: { allowed: false, reason: "Blocked: 'nope' is on the deny list", gate: "deny-list" },
+    decision: { allowed: false, reason: "已被拒绝：'nope' 在拒绝列表中", gate: "deny-list" },
   });
   assert.equal(await gate.evaluate(context("bash", { command: "sudo ls" })), undefined);
 });
@@ -124,7 +124,7 @@ test("WorkspaceBoundaryRule denies escapes and allows in-workspace paths", async
     const rule = new WorkspaceBoundaryRule();
     assert.equal(rule.name, "workspace-boundary");
     assert.deepEqual([...rule.tools], ["read_file", "write_file", "edit_file"]);
-    assert.equal(rule.message, "Access outside workspace");
+    assert.equal(rule.message, "访问工作区之外的路径");
 
     assert.equal(rule.evaluate(request("write_file", { path: "../outside.txt" }, root)), "deny");
     assert.equal(rule.evaluate(request("write_file", { path: "/etc/passwd" }, root)), "deny");
@@ -153,7 +153,7 @@ test("DestructiveCommandRule asks on destructive commands and abstains otherwise
   const rule = new DestructiveCommandRule();
   assert.equal(rule.name, "destructive-command");
   assert.deepEqual([...rule.tools], ["bash"]);
-  assert.equal(rule.message, "Potentially destructive command");
+  assert.equal(rule.message, "可能具有破坏性的命令");
 
   for (const command of ["rm temp.txt", "rm -rf build", "ls; rm x", "echo rm test"]) {
     assert.equal(rule.evaluate(request("bash", { command })), "ask", command);
@@ -182,11 +182,11 @@ test("RuleGate maps deny/ask and only consults rules that cover the tool", async
 
     assert.deepEqual(await gate.evaluate(context("write_file", { path: "../escape.txt" }, root)), {
       kind: "decide",
-      decision: { allowed: false, reason: "Access outside workspace", gate: "rules" },
+      decision: { allowed: false, reason: "访问工作区之外的路径", gate: "rules" },
     });
     assert.deepEqual(await gate.evaluate(context("bash", { command: "rm -rf build" })), {
       kind: "ask",
-      reason: "Potentially destructive command",
+      reason: "可能具有破坏性的命令",
       gate: "rules",
     });
     assert.equal(await gate.evaluate(context("read_file", { path: "src/agent.ts" }, root)), undefined);
@@ -247,16 +247,16 @@ test("PermissionPipeline runs gates in order and short-circuits on a decision", 
 
 test("PermissionPipeline forwards a pending ask to later gates and fails closed when none resolves", async () => {
   const asking = new RecordingGate("rules", () => ({
-    kind: "ask", reason: "Potentially destructive command", gate: "rules",
+    kind: "ask", reason: "可能具有破坏性的命令", gate: "rules",
   }));
   const sink = new RecordingGate("approval");
   const pipeline = createPermissionPipeline([asking, sink]);
 
   assert.deepEqual(await pipeline.check(request("bash", { command: "rm -rf build" })), {
-    allowed: false, reason: "unresolved permission request", gate: "pipeline",
+    allowed: false, reason: "权限请求未决", gate: "pipeline",
   });
   assert.equal(sink.calls.length, 1);
-  assert.deepEqual(sink.calls[0]?.ask, { reason: "Potentially destructive command", gate: "rules" });
+  assert.deepEqual(sink.calls[0]?.ask, { reason: "可能具有破坏性的命令", gate: "rules" });
   assert.equal(sink.calls[0]?.request.toolName, "bash");
 
   const abstaining = new RecordingGate("quiet");
@@ -275,7 +275,7 @@ test("PermissionPipeline fails closed when a gate throws", async () => {
   const pipeline = new PermissionPipeline([before, exploding, after]);
 
   assert.deepEqual(await pipeline.check(request("bash", { command: "ls" })), {
-    allowed: false, reason: "permission gate error: boom", gate: "exploding",
+    allowed: false, reason: "权限检查出错：boom", gate: "exploding",
   });
   assert.equal(before.calls.length, 1);
   assert.equal(after.calls.length, 0);
@@ -284,7 +284,7 @@ test("PermissionPipeline fails closed when a gate throws", async () => {
     throw "bang";
   });
   assert.deepEqual(await new PermissionPipeline([throwingValue]).check(request("bash", { command: "ls" })), {
-    allowed: false, reason: "permission gate error: bang", gate: "throwing-value",
+    allowed: false, reason: "权限检查出错：bang", gate: "throwing-value",
   });
 });
 
@@ -296,7 +296,7 @@ test("default gate order composes as deny-list, rules, approval", async () => {
   assert.deepEqual([...pipeline.listGates()], ["deny-list", "rules", "approval"]);
 
   assert.deepEqual(await pipeline.check(request("bash", { command: "sudo ls" })), {
-    allowed: false, reason: "Blocked: 'sudo' is on the deny list", gate: "deny-list",
+    allowed: false, reason: "已被拒绝：'sudo' 在拒绝列表中", gate: "deny-list",
   });
   assert.equal(approval.calls.length, 0, "a deny must not reach the approval gate");
 
@@ -310,7 +310,7 @@ test("default gate order composes as deny-list, rules, approval", async () => {
     allowed: true, reason: "", gate: "approval",
   });
   assert.deepEqual(approval.calls[1]?.ask, {
-    reason: "Potentially destructive command", gate: "rules",
+    reason: "可能具有破坏性的命令", gate: "rules",
   });
 });
 
@@ -338,12 +338,12 @@ function askContext(
 ): GateContext {
   return {
     request: request(toolName, input),
-    ask: { reason: "Potentially destructive command", gate: "rules" },
+    ask: { reason: "可能具有破坏性的命令", gate: "rules" },
   };
 }
 
 test("ConsoleApprovalPrompt allows y/yes answers and prints the s03 banner", async () => {
-  assert.equal(APPROVAL_QUESTION, "   Allow? [y/N] ");
+  assert.equal(APPROVAL_QUESTION, "   是否允许？[y/N] ");
   for (const answer of ["y", " Y ", "yes", "YES"]) {
     const lines: string[] = [];
     let asked = "";
@@ -354,15 +354,15 @@ test("ConsoleApprovalPrompt allows y/yes answers and prints the s03 banner", asy
     });
 
     const response = await prompt.request({
-      toolName: "bash", input: { command: "rm x" }, reason: "Potentially destructive command",
+      toolName: "bash", input: { command: "rm x" }, reason: "可能具有破坏性的命令",
     });
     assert.deepEqual(response, { decision: "allow" }, answer);
-    assert.equal(asked, "   Allow? [y/N] ", answer);
+    assert.equal(asked, "   是否允许？[y/N] ", answer);
     assert.equal(lines.length, 2, answer);
-    assert.equal(lines[0], "\n\x1b[33m[permission] Potentially destructive command\x1b[0m", answer);
-    assert.equal(lines[1], `   Tool: bash(${JSON.stringify({ command: "rm x" })})`, answer);
-    assert.ok(lines[0]?.includes("[permission]"), answer);
-    assert.ok(lines[1]?.includes("Tool: "), answer);
+    assert.equal(lines[0], "\n\x1b[33m[需要确认] 可能具有破坏性的命令\x1b[0m", answer);
+    assert.equal(lines[1], `   工具: bash(${JSON.stringify({ command: "rm x" })})`, answer);
+    assert.ok(lines[0]?.includes("[需要确认]"), answer);
+    assert.ok(lines[1]?.includes("工具: "), answer);
   }
 });
 
@@ -391,11 +391,11 @@ test("ConsoleApprovalPrompt never prompts without an interactive terminal", asyn
   });
 
   assert.deepEqual(await prompt.request({ toolName: "bash", input: { command: "rm x" }, reason: "why" }), {
-    decision: "deny", reason: "no interactive terminal",
+    decision: "deny", reason: "没有交互式终端，无法确认",
   });
   assert.equal(asked, false, "a non-interactive prompt must not read stdin");
   assert.deepEqual(lines, [], "a non-interactive prompt must not print");
-  assert.equal(NO_INTERACTIVE_TERMINAL, "no interactive terminal");
+  assert.equal(NO_INTERACTIVE_TERMINAL, "没有交互式终端，无法确认");
 });
 
 test("ConsoleApprovalPrompt fails closed when the question rejects", async () => {
@@ -406,8 +406,8 @@ test("ConsoleApprovalPrompt fails closed when the question rejects", async () =>
   });
   const response = await failing.request({ toolName: "bash", input: {}, reason: "why" });
   assert.equal(response.decision, "deny");
-  assert.ok(response.reason?.startsWith("approval prompt failed:"), response.reason);
-  assert.equal(response.reason, "approval prompt failed: readline closed");
+  assert.ok(response.reason?.startsWith("征求确认失败："), response.reason);
+  assert.equal(response.reason, "征求确认失败：readline closed");
 
   const throwingValue = new ConsoleApprovalPrompt({
     isInteractive: true,
@@ -415,14 +415,14 @@ test("ConsoleApprovalPrompt fails closed when the question rejects", async () =>
     question: async () => { throw "eof"; },
   });
   assert.deepEqual(await throwingValue.request({ toolName: "bash", input: {}, reason: "why" }), {
-    decision: "deny", reason: "approval prompt failed: eof",
+    decision: "deny", reason: "征求确认失败：eof",
   });
 });
 
 test("DenyAllApprovalPrompt denies every request without printing", async () => {
   const prompt = new DenyAllApprovalPrompt();
   assert.deepEqual(await prompt.request({ toolName: "bash", input: { command: "rm x" }, reason: "why" }), {
-    decision: "deny", reason: "no interactive terminal",
+    decision: "deny", reason: "没有交互式终端，无法确认",
   });
   assert.deepEqual(await prompt.request({ toolName: "glob", input: {}, reason: "why" }), {
     decision: "deny", reason: NO_INTERACTIVE_TERMINAL,
@@ -446,21 +446,21 @@ test("ApprovalGate maps allow/deny responses onto approval decisions", async () 
     decision: { allowed: true, reason: "", gate: "approval" },
   });
   assert.deepEqual(allowing.requests, [{
-    toolName: "bash", input: { command: "rm x" }, reason: "Potentially destructive command",
+    toolName: "bash", input: { command: "rm x" }, reason: "可能具有破坏性的命令",
   }]);
 
   const denying = new ScriptedApprovalPrompt({ decision: "deny" });
   assert.deepEqual(await new ApprovalGate(denying).evaluate(askContext()), {
     kind: "decide",
-    decision: { allowed: false, reason: "Permission denied by user", gate: "approval" },
+    decision: { allowed: false, reason: "用户拒绝", gate: "approval" },
   });
 
   const nonInteractive = new ScriptedApprovalPrompt({
-    decision: "deny", reason: "no interactive terminal",
+    decision: "deny", reason: "没有交互式终端，无法确认",
   });
   assert.deepEqual(await new ApprovalGate(nonInteractive).evaluate(askContext()), {
     kind: "decide",
-    decision: { allowed: false, reason: "no interactive terminal", gate: "approval" },
+    decision: { allowed: false, reason: "没有交互式终端，无法确认", gate: "approval" },
   });
 });
 
@@ -468,7 +468,7 @@ test("ApprovalGate fails closed when the prompt throws", async () => {
   const gate = new ApprovalGate(new ScriptedApprovalPrompt(new Error("prompt broke")));
   assert.deepEqual(await gate.evaluate(askContext()), {
     kind: "decide",
-    decision: { allowed: false, reason: "permission gate error: prompt broke", gate: "approval" },
+    decision: { allowed: false, reason: "权限检查出错：prompt broke", gate: "approval" },
   });
 });
 
@@ -481,16 +481,16 @@ test("createDefaultPermissionPipeline wires deny-list, rules and approval in ord
 
     // A destructive bash command reaches the approval gate.
     assert.deepEqual(await pipeline.check(request("bash", { command: "rm temp.txt" }, root)), {
-      allowed: false, reason: "Permission denied by user", gate: "approval",
+      allowed: false, reason: "用户拒绝", gate: "approval",
     });
     assert.equal(approval.requests.length, 1);
     assert.equal(approval.requests[0]?.toolName, "bash");
-    assert.equal(approval.requests[0]?.reason, "Potentially destructive command");
+    assert.equal(approval.requests[0]?.reason, "可能具有破坏性的命令");
     assert.deepEqual(approval.requests[0]?.input, { command: "rm temp.txt" });
 
     // The deny list short-circuits before approval is ever consulted.
     assert.deepEqual(await pipeline.check(request("bash", { command: "sudo ls" }, root)), {
-      allowed: false, reason: "Blocked: 'sudo' is on the deny list", gate: "deny-list",
+      allowed: false, reason: "已被拒绝：'sudo' 在拒绝列表中", gate: "deny-list",
     });
     assert.equal(approval.requests.length, 1, "a deny-list hit must not ask the user");
 
@@ -502,7 +502,7 @@ test("createDefaultPermissionPipeline wires deny-list, rules and approval in ord
 
     // A rule denial is final and does not ask either.
     assert.deepEqual(await pipeline.check(request("write_file", { path: "../x.txt" }, root)), {
-      allowed: false, reason: "Access outside workspace", gate: "rules",
+      allowed: false, reason: "访问工作区之外的路径", gate: "rules",
     });
     assert.equal(approval.requests.length, 1);
   } finally {
@@ -534,7 +534,7 @@ test("createDefaultPermissionPipeline denies when approval is non-interactive", 
     });
 
     assert.deepEqual(await pipeline.check(request("bash", { command: "rm temp.txt" }, root)), {
-      allowed: false, reason: "no interactive terminal", gate: "approval",
+      allowed: false, reason: "没有交互式终端，无法确认", gate: "approval",
     });
     assert.deepEqual(await pipeline.check(request("bash", { command: "ls -la" }, root)), {
       allowed: true, reason: "", gate: "default",
@@ -555,7 +555,7 @@ test("createDefaultPermissionPipeline honours an explicit gate override", async 
 
     assert.deepEqual([...pipeline.listGates()], ["deny-list"]);
     assert.deepEqual(await pipeline.check(request("bash", { command: "sudo ls" }, root)), {
-      allowed: false, reason: "Blocked: 'sudo' is on the deny list", gate: "deny-list",
+      allowed: false, reason: "已被拒绝：'sudo' 在拒绝列表中", gate: "deny-list",
     });
     assert.deepEqual(await pipeline.check(request("bash", { command: "rm temp.txt" }, root)), {
       allowed: true, reason: "", gate: "default",
@@ -567,14 +567,14 @@ test("createDefaultPermissionPipeline honours an explicit gate override", async 
 
 test("an ask that no gate resolves is denied instead of silently allowed", async () => {
   const asking = new RecordingGate("rules", () => ({
-    kind: "ask", reason: "Potentially destructive command", gate: "rules",
+    kind: "ask", reason: "可能具有破坏性的命令", gate: "rules",
   }));
   const decision = await new PermissionPipeline([asking]).check(
     request("bash", { command: "rm -rf build" }),
   );
   assert.equal(decision.allowed, false);
   assert.equal(decision.gate, "pipeline");
-  assert.match(decision.reason, /unresolved permission request/);
+  assert.match(decision.reason, /权限请求未决/);
 
   const root = await mkdtemp(join(tmpdir(), "cw-perm-unresolved-"));
   try {

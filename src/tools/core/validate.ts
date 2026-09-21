@@ -5,6 +5,18 @@ export interface JsonSchemaProperty {
   readonly minimum?: number;
   readonly minLength?: number;
   readonly items?: JsonSchemaProperty;
+  /**
+   * The four keywords below are declaration-only: they exist so the schema
+   * handed to the model matches the Python s05 `TOOLS` list verbatim. The
+   * runtime constraints behind them belong to each tool's domain layer (for
+   * example `TodoList.parse`), so the generic validator ignores them on purpose
+   * and never replaces a domain error message with
+   * `Error: Invalid input for ...`.
+   */
+  readonly maxItems?: number;
+  readonly enum?: readonly string[];
+  readonly properties?: Readonly<Record<string, JsonSchemaProperty>>;
+  readonly required?: readonly string[];
 }
 
 export interface JsonSchemaObject {

@@ -80,7 +80,7 @@ test("TR-3.2: compiled CLI uses real SDK, local dotenv override, bash+read+write
       assert.equal(request.body.max_tokens, 8000);
       assert.equal(request.key, "local-fake-key");
       assert.equal(request.auth, undefined);
-      assert.equal(Array.isArray(request.body.tools) ? request.body.tools.length : 0, 5);
+      assert.equal(Array.isArray(request.body.tools) ? request.body.tools.length : 0, 6);
     }
     assert.equal((requests[0]?.body.messages as unknown[]).length, 1);
     const thirdHistory = requests[2]?.body.messages as unknown[];

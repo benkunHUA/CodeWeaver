@@ -4,6 +4,7 @@ import type { ModelClient, ToolHooks } from "./types.js";
 import { createDefaultHooks } from "./hooks/index.js";
 import type { HookBus } from "./hooks/index.js";
 import { ConsoleApprovalPrompt, createDefaultPermissionPipeline } from "./permission/index.js";
+import { TodoReminder, TodoStore } from "./planning/index.js";
 import { FileLockRegistry } from "./tools/core/FileLockRegistry.js";
 import { ToolContext } from "./tools/core/ToolContext.js";
 import { ToolRegistry } from "./tools/ToolRegistry.js";
@@ -26,6 +27,12 @@ export interface RuntimeConfig extends Config {
    * reader without leaking terminal details into the base configuration.
    */
   readonly approval: ConsoleApprovalPrompt;
+  /**
+   * Stateful reminder strategy handed to `AgentLoop`. `AgentLoop` calls
+   * `beginRun()` at the start of every `run()`, which resets the internal
+   * counter, so a single instance can be safely reused across questions.
+   */
+  readonly reminder: TodoReminder;
 }
 
 export function loadConfig(): Config {
@@ -64,8 +71,14 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
     log: console.log,
     logger: console.error,
   });
-  const context = new ToolContext({ workspace, locks: new FileLockRegistry(), logger: console.error });
+  const context = new ToolContext({
+    workspace,
+    locks: new FileLockRegistry(),
+    todos: new TodoStore(),
+    logger: console.error,
+  });
   const registry = new ToolRegistry({ context, hooks: config.toolHooks, logger: console.error });
   for (const tool of createDefaultTools()) registry.register(tool);
-  return { ...config, workspaceRoot: workspace.root, hooks, registry, approval };
+  const reminder = new TodoReminder();
+  return { ...config, workspaceRoot: workspace.root, hooks, registry, approval, reminder };
 }

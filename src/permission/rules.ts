@@ -26,7 +26,7 @@ export function containsDestructiveCommand(command: string): boolean {
 export class WorkspaceBoundaryRule implements PermissionRule {
   readonly name = "workspace-boundary";
   readonly tools: readonly string[] = ["read_file", "write_file", "edit_file"];
-  readonly message = "Access outside workspace";
+  readonly message = "访问工作区之外的路径";
 
   evaluate(request: PermissionRequest): PermissionAction | undefined {
     const userPath = request.input.path;
@@ -45,7 +45,7 @@ export class WorkspaceBoundaryRule implements PermissionRule {
 export class DestructiveCommandRule implements PermissionRule {
   readonly name = "destructive-command";
   readonly tools: readonly string[] = ["bash"];
-  readonly message = "Potentially destructive command";
+  readonly message = "可能具有破坏性的命令";
 
   evaluate(request: PermissionRequest): PermissionAction | undefined {
     const raw = request.input.command;
