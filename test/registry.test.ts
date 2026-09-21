@@ -3,51 +3,70 @@ import test from "node:test";
 import { symlink, mkdir, writeFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createToolRegistry } from "../src/tools/registry.js";
-import { createDefaultRegistry } from "../src/tools/index.js";
+import { Tool } from "../src/tools/core/Tool.js";
+import type { JsonSchemaObject } from "../src/tools/core/validate.js";
+import { ToolContext } from "../src/tools/core/ToolContext.js";
+import { FileLockRegistry } from "../src/tools/core/FileLockRegistry.js";
+import { ToolRegistry } from "../src/tools/ToolRegistry.js";
+import { createDefaultTools } from "../src/tools/createDefaultTools.js";
 import { createWorkspace, safeWorkspacePath } from "../src/workspace.js";
-import type { ToolDefinition } from "../src/types.js";
+import type { AnthropicTool, ToolHooks } from "../src/types.js";
 
-type AnyToolDefinition = ToolDefinition;
+const workspace = await createWorkspace();
+const context = new ToolContext({ workspace, locks: new FileLockRegistry() });
 
-const noopDefinition: AnyToolDefinition = {
-  name: "bash",
-  schema: {
-    name: "bash",
-    description: "noop",
-    input_schema: {
-      type: "object",
-      properties: { command: { type: "string" } },
-      required: ["command"],
-    },
-  },
-  handler: async (input) => `ok:${(input as { readonly command: string }).command}`,
-};
+/** Mirrors the removed `createToolRegistry` factory: registers the tools in order. */
+function registryOf(
+  tools: readonly Tool<unknown>[],
+  options: { readonly hooks?: ToolHooks; readonly logger?: (message: string) => void } = {},
+): ToolRegistry {
+  const registry = new ToolRegistry({ context, hooks: options.hooks, logger: options.logger });
+  for (const tool of tools) registry.register(tool);
+  return registry;
+}
 
-const readDefinition: AnyToolDefinition = {
-  name: "read_file",
-  schema: {
-    name: "read_file",
-    description: "noop",
-    input_schema: {
-      type: "object",
-      properties: { path: { type: "string" }, limit: { type: "integer", minimum: 1 } },
-      required: ["path"],
-    },
-  },
-  handler: async (input) => {
-    const shape = input as { readonly path: string; readonly limit?: number };
-    return `read:${shape.path}:${shape.limit ?? "none"}`;
-  },
-};
+class BashStubTool extends Tool<{ command: string }> {
+  readonly name = "bash";
+  readonly description = "noop";
+  readonly inputSchema: JsonSchemaObject = {
+    type: "object",
+    properties: { command: { type: "string" } },
+    required: ["command"],
+  };
+
+  protected async run(input: { command: string }): Promise<string> {
+    return `ok:${input.command}`;
+  }
+}
+
+class ReadFileStubTool extends Tool<{ path: string; limit?: number }> {
+  readonly name = "read_file";
+  readonly description = "noop";
+  readonly inputSchema: JsonSchemaObject = {
+    type: "object",
+    properties: { path: { type: "string" }, limit: { type: "integer", minimum: 1 } },
+    required: ["path"],
+  };
+
+  protected async run(input: { path: string; limit?: number }): Promise<string> {
+    return `read:${input.path}:${input.limit ?? "none"}`;
+  }
+}
+
+/** Only exists so the registry's schema/name mismatch guard stays observable. */
+class MismatchedSchemaTool extends BashStubTool {
+  override toAnthropicSchema(): AnthropicTool {
+    return { ...super.toAnthropicSchema(), name: "wrong" };
+  }
+}
 
 test("TR-1.1: listTools & getSchemas expose five-tool shape", async () => {
-  const registry = await createDefaultRegistry();
+  const registry = registryOf(createDefaultTools());
   assert.deepEqual(
-    registry.listTools().map((tool) => tool.name),
+    registry.list().map((tool) => tool.name),
     ["bash", "read_file", "write_file", "edit_file", "glob"],
   );
-  const schemas = registry.getSchemas();
+  const schemas = registry.schemas();
   assert.equal(schemas.length, 5);
   for (const schema of schemas) {
     assert.ok(schema.name);
@@ -58,7 +77,7 @@ test("TR-1.1: listTools & getSchemas expose five-tool shape", async () => {
 });
 
 test("TR-1.2: invalid input returns Error without throwing", async () => {
-  const registry = createToolRegistry([noopDefinition, readDefinition]);
+  const registry = registryOf([new BashStubTool(), new ReadFileStubTool()]);
   assert.equal(
     await registry.invoke("bash", {}),
     "Error: Invalid input for bash: command is required",
@@ -72,7 +91,7 @@ test("TR-1.2: invalid input returns Error without throwing", async () => {
     "Error: Invalid input for read_file: read_file.limit must be >= 1",
   );
   const hookCalls: Array<{ phase: string; name: string }> = [];
-  const registryWithHooks = createToolRegistry([readDefinition], {
+  const registryWithHooks = registryOf([new ReadFileStubTool()], {
     hooks: {
       before: (ctx) => {
         hookCalls.push({ phase: "before", name: ctx.name });
@@ -91,7 +110,7 @@ test("TR-1.2: invalid input returns Error without throwing", async () => {
 
 test("TR-1.4: hooks always fire and hook failures are isolated", async () => {
   const logs: string[] = [];
-  const registry = createToolRegistry([noopDefinition], {
+  const registry = registryOf([new BashStubTool()], {
     logger: (message) => logs.push(message),
     hooks: {
       before() {
@@ -106,7 +125,7 @@ test("TR-1.4: hooks always fire and hook failures are isolated", async () => {
   assert.match(logs.join("\n"), /hook error: bash before failed: boom before/);
   assert.match(logs.join("\n"), /hook error: bash after failed: boom after/);
   const durations: number[] = [];
-  await createToolRegistry([noopDefinition], {
+  await registryOf([new BashStubTool()], {
     hooks: {
       after(ctx) {
         durations.push(ctx.durationMs);
@@ -120,38 +139,42 @@ test("TR-1.4: hooks always fire and hook failures are isolated", async () => {
 });
 
 test("registry snapshots isolate schemas, definitions and hook inputs", async () => {
-  const definition = { ...noopDefinition, schema: structuredClone(noopDefinition.schema) };
-  const definitions = [definition];
-  const registry = createToolRegistry(definitions, {
+  const definitions = [new BashStubTool()];
+  const registry = registryOf(definitions, {
     hooks: { before(ctx) {
       if (typeof ctx.input === "object" && ctx.input !== null) Object.assign(ctx.input, { command: 9 });
     } },
   });
-  definition.schema.input_schema.required = ["oops"];
   definitions.pop();
-  registry.getSchemas()[0]!.input_schema.required = ["oops"];
-  registry.listTools()[0]!.schema.input_schema.required = ["oops"];
+  registry.schemas()[0]!.input_schema.required = ["oops"];
+  registry.list()[0]!.toAnthropicSchema().input_schema.required = ["oops"];
   assert.equal(await registry.invoke("bash", { command: "valid" }), "ok:valid");
-  assert.equal(registry.listTools().length, 1);
-  assert.equal(typeof registry.getHandler("bash"), "function");
-  assert.equal(registry.getHandler("missing"), undefined);
-  assert.throws(() => createToolRegistry([noopDefinition, noopDefinition]), /Duplicate/);
-  assert.throws(() => createToolRegistry([{ ...noopDefinition, schema: { ...noopDefinition.schema, name: "wrong" } }]), /mismatch/);
+  assert.equal(registry.list().length, 1);
+  assert.equal(registry.get("bash")?.name, "bash");
+  assert.equal(registry.get("missing"), undefined);
+  assert.throws(() => registryOf([new BashStubTool(), new BashStubTool()]), /Duplicate/);
+  assert.throws(() => registryOf([new MismatchedSchemaTool()]), /mismatch/);
 });
+
+class RocketNoopTool extends Tool<{ text: string }> {
+  readonly name = "noop";
+  readonly description = "noop";
+  readonly inputSchema: JsonSchemaObject = {
+    type: "object",
+    properties: { text: { type: "string", minLength: 1 } },
+    required: ["text"],
+  };
+
+  protected async run(input: { text: string }): Promise<string> {
+    if (input.text === "throw") throw new Error("handler failed");
+    if (input.text === "empty") return "";
+    return "\u{1f680}".repeat(50_001);
+  }
+}
 
 test("registry normalizes results and audits unknown, invalid, success and failure calls", async () => {
   const events: Array<{ name: string; phase: string; result?: string }> = [];
-  const noop: ToolDefinition<string> = {
-    name: "noop",
-    schema: { name: "noop", input_schema: { type: "object", properties: { text: { type: "string", minLength: 1 } }, required: ["text"] } },
-    handler: async (raw) => {
-      const { text } = raw as { text: string };
-      if (text === "throw") throw new Error("handler failed");
-      if (text === "empty") return "";
-      return "\u{1f680}".repeat(50_001);
-    },
-  };
-  const registry = createToolRegistry([noop], {
+  const registry = registryOf([new RocketNoopTool()], {
     hooks: {
       before: ({ name }) => { events.push({ name, phase: "before" }); },
       after: ({ name, result, durationMs }) => {
@@ -170,7 +193,7 @@ test("registry normalizes results and audits unknown, invalid, success and failu
     assert.equal(await registry.invoke(name, input), expected);
     assert.deepEqual(events.splice(0), [{ name, phase: "before" }, { name, phase: "after", result: expected }]);
   }
-  const throwingLogger = createToolRegistry([noopDefinition], {
+  const throwingLogger = registryOf([new BashStubTool()], {
     logger: () => { throw new Error("logger failed"); },
     hooks: { before: () => { throw new Error("before failed"); }, after: () => { throw new Error("after failed"); } },
   });
@@ -178,37 +201,42 @@ test("registry normalizes results and audits unknown, invalid, success and failu
   assert.equal(await throwingLogger.invoke("missing", {}), "Unknown: missing");
 });
 
+class AuditedNoopTool extends Tool<{ text: string }> {
+  readonly name = "noop";
+  readonly description = "noop";
+  readonly inputSchema: JsonSchemaObject = {
+    type: "object",
+    required: ["text"],
+    properties: { text: { type: "string" } },
+  };
+
+  protected async run(input: { text: string }): Promise<string> {
+    if (input.text === "throw") throw new Error("failed");
+    return input.text === "empty" ? "" : "x".repeat(50_001);
+  }
+}
+
 test("TR-I-2.1: every public handler access preserves registry guarantees", async () => {
   const events: string[] = [];
-  const registry = createToolRegistry([{
-    name: "noop",
-    schema: { name: "noop", input_schema: { type: "object", required: ["text"], properties: { text: { type: "string" } } } },
-    handler: async (raw: unknown) => {
-      const { text } = raw as { text: string };
-      if (text === "throw") throw new Error("failed");
-      return text === "empty" ? "" : "x".repeat(50_001);
-    },
-  }], {
+  const registry = registryOf([new AuditedNoopTool()], {
     hooks: {
       before: () => { events.push("before"); },
       after: () => { events.push("after"); },
     },
   });
-  const handlers = [
-    (input: unknown) => registry.invoke("noop", input),
-    registry.getHandler("noop")!,
-    registry.listTools()[0]!.handler as (input: unknown) => Promise<string>,
-  ];
-  for (const handler of handlers) {
-    for (const [input, expected] of [
-      [{}, "Error: Invalid input for noop: text is required"],
-      [{ text: "throw" }, "Error: failed"],
-      [{ text: "empty" }, "(no output)"],
-      [{ text: "large" }, "x".repeat(50_000)],
-    ] as const) {
-      assert.equal(await handler(input), expected);
-      assert.deepEqual(events.splice(0), ["before", "after"]);
-    }
+  // The registered Tool instance is exposed by `get` / `list`; the public
+  // dispatch paths are the registry wrapper (which also observes the hooks) and
+  // the tool's own `execute` (same validation, placeholder and truncation).
+  const tool = registry.get("noop")!;
+  for (const [input, expected] of [
+    [{}, "Error: Invalid input for noop: text is required"],
+    [{ text: "throw" }, "Error: failed"],
+    [{ text: "empty" }, "(no output)"],
+    [{ text: "large" }, "x".repeat(50_000)],
+  ] as const) {
+    assert.equal(await registry.invoke("noop", input), expected);
+    assert.deepEqual(events.splice(0), ["before", "after"]);
+    assert.equal(await tool.execute(input, registry.context), expected);
   }
 });
 

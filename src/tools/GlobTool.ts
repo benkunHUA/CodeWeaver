@@ -1,7 +1,9 @@
 import { readdir } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import { OUTPUT_LIMIT, sliceCharacters } from "../bash.js";
-import type { Workspace } from "../types.js";
+import type { GlobInput } from "../types.js";
+import { Tool } from "./core/Tool.js";
+import type { ToolContext } from "./core/ToolContext.js";
+import type { JsonSchemaObject } from "./core/validate.js";
 
 const GLOB_MATCH_LIMIT = 200;
 
@@ -43,18 +45,25 @@ function segmentToRegex(segment: string): RegExp {
     return new RegExp(`^${local}$`, "u");
 }
 
-export async function globTool(
-  workspace: Workspace,
-  input: { readonly pattern: string },
-): Promise<string> {
-  try {
+export class GlobTool extends Tool<GlobInput> {
+  readonly name = "glob";
+  readonly description = "按 glob 模式查找文件；** 表示递归匹配。";
+  readonly inputSchema: JsonSchemaObject = {
+    type: "object",
+    properties: { pattern: { type: "string" } },
+    required: ["pattern"],
+  };
+  protected override readonly emptyPlaceholder = "(no matches)";
+
+  protected async run(input: GlobInput, context: ToolContext): Promise<string> {
     if (isAbsolute(input.pattern) || input.pattern.split("/").includes("..")) {
       throw new Error(`Path escapes workspace: ${input.pattern}`);
     }
     if (input.pattern.length > 4096) throw new Error("Glob pattern exceeds 4096 characters");
+    const workspace = context.workspace;
     const directoryOnly = input.pattern.endsWith("/");
     const segments = input.pattern.split("/").filter((part) => part !== "" && part !== ".");
-    if (!segments.length) return "(no matches)";
+    if (!segments.length) return "";
     const regexes = segments.map((segment) => segment === "**" ? null : segmentToRegex(segment));
     const expand = (states: Set<number>): Set<number> => {
       for (const state of states) {
@@ -100,9 +109,7 @@ export async function globTool(
     if (allowed.length > GLOB_MATCH_LIMIT) {
       outputLines.push("... (more matches omitted; narrow the pattern)");
     }
-    const joined = outputLines.length === 0 ? "(no matches)" : outputLines.join("\n");
-    return sliceCharacters(joined, OUTPUT_LIMIT);
-  } catch (error) {
-    return `Error: ${error instanceof Error ? error.message : String(error)}`;
+    // An empty result becomes the `(no matches)` placeholder in the base class.
+    return outputLines.join("\n");
   }
 }

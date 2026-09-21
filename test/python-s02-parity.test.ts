@@ -6,9 +6,38 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { agentLoop, systemPrompt } from "../src/agent.js";
-import { createDefaultRegistry } from "../src/tools/index.js";
-import type { Conversation, ModelRequest, ModelResponse } from "../src/types.js";
+import { AgentLoop } from "../src/agent/AgentLoop.js";
+import { Session } from "../src/agent/Session.js";
+import { ConsoleToolPresenter } from "../src/agent/ToolPresenter.js";
+import { systemPrompt } from "../src/agent/systemPrompt.js";
+import { BashTool } from "../src/tools/BashTool.js";
+import { createDefaultTools } from "../src/tools/createDefaultTools.js";
+import { FileLockRegistry } from "../src/tools/core/FileLockRegistry.js";
+import { ToolContext } from "../src/tools/core/ToolContext.js";
+import { ToolRegistry } from "../src/tools/ToolRegistry.js";
+import { createWorkspace } from "../src/workspace.js";
+import type { BashInput, Conversation, ModelRequest, ModelResponse } from "../src/types.js";
+
+/**
+ * Replaces the built-in bash tool the way the old `overrides` handler did:
+ * commands are recorded and echoed instead of executed. Name, description and
+ * input schema stay inherited from `BashTool`, so the request payload keeps the
+ * production tool shape.
+ */
+class BashStubTool extends BashTool {
+  readonly #recordCommand: (command: string) => void;
+
+  constructor(recordCommand: (command: string) => void) {
+    super();
+    this.#recordCommand = recordCommand;
+  }
+
+  protected override async run(input: BashInput): Promise<string> {
+    assert.equal(typeof input.command, "string");
+    this.#recordCommand(input.command);
+    return `result:${input.command}`;
+  }
+}
 
 const source = fileURLToPath(new URL("../../s02_tool_use/code.py", import.meta.url));
 const candidates = process.env.PYTHON
@@ -136,7 +165,11 @@ async function compareTools(root: string, calls: readonly Call[], extra: Record<
   const expected = runPython("tools", { calls, workdir: root }) as string[];
   const expectedFiles = await snapshot(root);
   await reset(root, extra);
-  const registry = await createDefaultRegistry({ root });
+  const workspace = await createWorkspace(root);
+  const registry = new ToolRegistry({
+    context: new ToolContext({ workspace, locks: new FileLockRegistry() }),
+  });
+  for (const tool of createDefaultTools()) registry.register(tool);
   const actual: string[] = [];
   for (const call of calls) actual.push(await registry.invoke(call.name, call.kwargs));
   assert.deepEqual(await snapshot(root), expectedFiles, "filesystem effects");
@@ -388,32 +421,32 @@ test("s02 Python parity: complete requests, history and dispatch order; explicit
           messages: structuredClone(initial), requests: [], names: [], commands: [], logs: "",
         };
         const queue = structuredClone(sample.responses);
-        const registry = await createDefaultRegistry({
-          root,
+        const workspace = await createWorkspace(root);
+        const registry = new ToolRegistry({
+          context: new ToolContext({ workspace, locks: new FileLockRegistry() }),
           hooks: { before: ({ name }) => {
             actual.names.push(name);
             if (sample.cliHook) actual.logs += `\x1b[35m> ${name}\x1b[0m\n`;
           } },
-          overrides: [{
-            name: "bash",
-            handler: async (input) => {
-              assert.ok(typeof input === "object" && input !== null && "command" in input);
-              assert.equal(typeof input.command, "string");
-              actual.commands.push(input.command as string);
-              return `result:${input.command}`;
-            },
-          }],
         });
-        await agentLoop(actual.messages, {
-          model: "test-model", system: systemPrompt(root), registry,
+        for (const tool of createDefaultTools({
+          overrides: [new BashStubTool((command) => { actual.commands.push(command); })],
+        })) registry.register(tool);
+        // The old `log` collector lives on the presenter now: it prints the bash
+        // `$ command` line and the 200 code point result previews, including the
+        // blocked results. The registry logger is deliberately left unset, just
+        // as this test built its registry without one before: its diagnostics
+        // are hook errors and the `Unknown:` line the loop already previews.
+        await new AgentLoop({
+          model: "test-model", system: systemPrompt(root), registry, workspaceRoot: workspace.root,
+          presenter: new ConsoleToolPresenter({ log: (line) => { actual.logs += `${line}\n`; } }),
           client: { messages: { async create(request) {
             actual.requests.push(structuredClone(request));
             const response = queue.shift();
             assert.ok(response, "unexpected extra model request");
             return response;
           } } },
-          log: (line) => { actual.logs += `${line}\n`; },
-        });
+        }).run(new Session(actual.messages));
         assert.equal(queue.length, 0, "all scripted model responses consumed");
         assert.deepEqual(actual.messages, expected.messages, "complete conversation");
         assert.equal(actual.requests.length, expected.requests.length, "request count");

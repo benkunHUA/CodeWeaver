@@ -1,10 +1,13 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "dotenv";
-import type { ModelClient, ToolRegistry, ToolHooks } from "./types.js";
+import type { ModelClient, ToolHooks } from "./types.js";
 import { createDefaultHooks } from "./hooks/index.js";
 import type { HookBus } from "./hooks/index.js";
 import { ConsoleApprovalPrompt, createDefaultPermissionPipeline } from "./permission/index.js";
-import { createDefaultRegistry } from "./tools/index.js";
+import { FileLockRegistry } from "./tools/core/FileLockRegistry.js";
+import { ToolContext } from "./tools/core/ToolContext.js";
+import { ToolRegistry } from "./tools/ToolRegistry.js";
+import { createDefaultTools } from "./tools/createDefaultTools.js";
 import { createWorkspace } from "./workspace.js";
 
 export interface Config {
@@ -61,8 +64,8 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
     log: console.log,
     logger: console.error,
   });
-  const registry = await createDefaultRegistry({
-    root: workspace.root, hooks: config.toolHooks, logger: console.error,
-  });
+  const context = new ToolContext({ workspace, locks: new FileLockRegistry(), logger: console.error });
+  const registry = new ToolRegistry({ context, hooks: config.toolHooks, logger: console.error });
+  for (const tool of createDefaultTools()) registry.register(tool);
   return { ...config, workspaceRoot: workspace.root, hooks, registry, approval };
 }

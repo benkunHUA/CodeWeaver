@@ -3,10 +3,42 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { agentLoop } from "../src/agent.js";
+import { AgentLoop } from "../src/agent/AgentLoop.js";
+import { Session } from "../src/agent/Session.js";
+import { ConsoleToolPresenter } from "../src/agent/ToolPresenter.js";
 import { runBash } from "../src/bash.js";
-import { createToolRegistry } from "../src/tools/registry.js";
+import { FileLockRegistry } from "../src/tools/core/FileLockRegistry.js";
+import { Tool } from "../src/tools/core/Tool.js";
+import { ToolContext } from "../src/tools/core/ToolContext.js";
+import type { JsonSchemaObject } from "../src/tools/core/validate.js";
+import { ToolRegistry } from "../src/tools/ToolRegistry.js";
+import { createWorkspace } from "../src/workspace.js";
 import type { AnthropicTool, Conversation, ModelRequest, ModelResponse } from "../src/types.js";
+
+/**
+ * s01 exposes bash only. The stub keeps the lesson's `run_bash` contract while
+ * carrying the exact schema the lesson sends, so the captured request can still
+ * be compared field by field.
+ */
+class LessonBashTool extends Tool<{ command: string }> {
+  readonly name = "bash";
+  readonly description: string;
+  readonly inputSchema: JsonSchemaObject;
+  readonly #record: (command: string) => void;
+
+  constructor(schema: AnthropicTool, record: (command: string) => void) {
+    super();
+    this.description = schema.description ?? "";
+    this.inputSchema = structuredClone(schema.input_schema) as JsonSchemaObject;
+    this.#record = record;
+  }
+
+  protected async run(input: { command: string }): Promise<string> {
+    assert.ok("command" in input);
+    this.#record(input.command);
+    return `result:${input.command}`;
+  }
+}
 
 const source = fileURLToPath(new URL("../../s01_agent_loop/code.py", import.meta.url));
 const python = process.env.PYTHON ?? "python3";
@@ -126,27 +158,25 @@ test("Python parity: identical requests, history mutations, command order and lo
     assert.equal(bashSchema.name, "bash");
     // s01 exposes only bash. Supply its real schema before the request is made;
     // never replace captured request fields to make the comparison pass.
-    const registry = createToolRegistry([{
-      name: "bash",
-      schema: structuredClone(bashSchema),
-      handler: async (input: { command: string }) => {
-        assert.ok("command" in input);
-        commands.push(input.command);
-        return `result:${input.command}`;
-      },
-    }]);
-    await agentLoop(messages, {
+    const workspace = await createWorkspace();
+    const registry = new ToolRegistry({
+      context: new ToolContext({ workspace, locks: new FileLockRegistry() }),
+    });
+    registry.register(new LessonBashTool(bashSchema, (command) => { commands.push(command); }));
+    const log = (line: string) => { logs += `${line}\n`; };
+    await new AgentLoop({
       model: "test-model",
       system: firstRequest.system as string,
       registry,
+      workspaceRoot: workspace.root,
+      presenter: new ConsoleToolPresenter({ log }),
       client: { messages: { async create(request) {
         requests.push(structuredClone(request));
         const response = queue.shift();
         assert.ok(response);
         return response;
       } } },
-      log: (line) => { logs += `${line}\n`; },
-    });
+    }).run(new Session(messages));
     assert.equal(queue.length, 0);
     assert.deepEqual({ messages, requests, commands, logs }, expected);
   }

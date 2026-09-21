@@ -6,7 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { agentLoop } from "../src/agent.js";
+import { AgentLoop } from "../src/agent/AgentLoop.js";
+import { Session } from "../src/agent/Session.js";
+import { SilentToolPresenter } from "../src/agent/ToolPresenter.js";
 import { createDefaultHooks, createSessionSummaryHook } from "../src/hooks/index.js";
 import type { HookEvent } from "../src/hooks/index.js";
 import {
@@ -28,8 +30,31 @@ import type {
   GateOutcome,
   PermissionRequest,
 } from "../src/permission/index.js";
-import { createDefaultRegistry } from "../src/tools/index.js";
+import { BashTool } from "../src/tools/BashTool.js";
+import { createDefaultTools } from "../src/tools/createDefaultTools.js";
+import { FileLockRegistry } from "../src/tools/core/FileLockRegistry.js";
+import { ToolContext } from "../src/tools/core/ToolContext.js";
+import { ToolRegistry } from "../src/tools/ToolRegistry.js";
+import { createWorkspace } from "../src/workspace.js";
 import type { Conversation, ModelResponse } from "../src/types.js";
+
+/**
+ * Stands in for the built-in bash tool the way the old `overrides` handler did.
+ * It must never run: a denied call is refused before the registry is reached.
+ */
+class BashStubTool extends BashTool {
+  readonly #onRun: () => void;
+
+  constructor(onRun: () => void) {
+    super();
+    this.#onRun = onRun;
+  }
+
+  protected override async run(): Promise<string> {
+    this.#onRun();
+    return "should never run";
+  }
+}
 
 const s03Source = fileURLToPath(new URL("../../s03_permission/code.py", import.meta.url));
 const s04Source = fileURLToPath(new URL("../../s04_hooks/code.py", import.meta.url));
@@ -387,24 +412,23 @@ test("s03 Python parity: denial tool_result text equals the s03 literal", option
       finalAnswer(),
     ];
     const messages: Conversation = [{ role: "user", content: "hello" }];
-    const registry = await createDefaultRegistry({
-      root,
-      overrides: [{
-        name: "bash",
-        handler: async () => {
-          executed.push("bash");
-          return "should never run";
-        },
-      }],
+    const workspace = await createWorkspace(root);
+    const registry = new ToolRegistry({
+      context: new ToolContext({ workspace, locks: new FileLockRegistry() }),
     });
-    await agentLoop(messages, {
-      model: "test-model", system: "test", registry, hooks, workspaceRoot: root, log: () => {},
+    for (const tool of createDefaultTools({
+      overrides: [new BashStubTool(() => { executed.push("bash"); })],
+    })) registry.register(tool);
+    await new AgentLoop({
+      model: "test-model", system: "test", registry, hooks, workspaceRoot: root,
+      // This case asserted an empty log sink, so nothing is presented.
+      presenter: new SilentToolPresenter(),
       client: { messages: { async create() {
         const response = queue.shift();
         assert.ok(response, "unexpected extra model request");
         return response;
       } } },
-    });
+    }).run(new Session(messages));
 
     assert.equal(queue.length, 0);
     const toolResults: string[] = [];

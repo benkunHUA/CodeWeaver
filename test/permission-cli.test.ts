@@ -7,15 +7,22 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { ContentBlock } from "@anthropic-ai/sdk/resources/messages";
-import { agentLoop } from "../src/agent.js";
+import { AgentLoop } from "../src/agent/AgentLoop.js";
+import { Session } from "../src/agent/Session.js";
+import { ConsoleToolPresenter } from "../src/agent/ToolPresenter.js";
+import { systemPrompt } from "../src/agent/systemPrompt.js";
 import { createDefaultHooks, type HookBus } from "../src/hooks/index.js";
 import {
   APPROVAL_QUESTION,
   ConsoleApprovalPrompt,
   createDefaultPermissionPipeline,
 } from "../src/permission/index.js";
-import { createDefaultRegistry } from "../src/tools/index.js";
+import { createDefaultTools } from "../src/tools/createDefaultTools.js";
+import { FileLockRegistry } from "../src/tools/core/FileLockRegistry.js";
+import { ToolContext } from "../src/tools/core/ToolContext.js";
+import { ToolRegistry } from "../src/tools/ToolRegistry.js";
 import type { Conversation, ModelClient, ModelRequest, ModelResponse } from "../src/types.js";
+import { createWorkspace } from "../src/workspace.js";
 
 const entry = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 
@@ -72,6 +79,37 @@ function scriptedSession(workspaceRoot: string, answer: string): ScriptedSession
   return { hooks, logs, asked };
 }
 
+/**
+ * Run one conversation through the production-shaped loop, collecting every
+ * line the user would see. The registry, tool context and presenter mirror
+ * `loadRuntimeConfig`, only the sinks are redirected into `logs`.
+ */
+async function runScriptedLoop(
+  messages: Conversation,
+  options: {
+    readonly workspaceRoot: string;
+    readonly client: ModelClient;
+    readonly hooks: HookBus;
+    readonly logs: string[];
+  },
+): Promise<void> {
+  const workspace = await createWorkspace(options.workspaceRoot);
+  const log = (message: string) => { options.logs.push(message); };
+  const context = new ToolContext({ workspace, locks: new FileLockRegistry(), logger: log });
+  const registry = new ToolRegistry({ context, logger: log });
+  for (const tool of createDefaultTools()) registry.register(tool);
+  const loop = new AgentLoop({
+    client: options.client,
+    model: "test-model",
+    system: systemPrompt(workspace.root),
+    registry,
+    workspaceRoot: workspace.root,
+    hooks: options.hooks,
+    presenter: new ConsoleToolPresenter({ log }),
+  });
+  await loop.run(new Session(messages));
+}
+
 /** Content of the first tool_result block of one conversation turn. */
 function toolResultContent(messages: Conversation, turnIndex: number): string {
   const content = messages[turnIndex]?.content;
@@ -113,11 +151,7 @@ test("permission path 1: an interactive denial reports Permission denied. and le
       { content: [text("done")], stop_reason: "end_turn" },
     ]);
     const messages: Conversation = [{ role: "user", content: "remove temp.txt" }];
-    const registry = await createDefaultRegistry({ root: workspaceRoot });
-    await agentLoop(messages, {
-      client, model: "test-model", registry, hooks, workspaceRoot,
-      log: (message) => { logs.push(message); },
-    });
+    await runScriptedLoop(messages, { workspaceRoot, client, hooks, logs });
 
     assert.equal(toolResultContent(messages, 2), "Permission denied.");
     // The user was actually asked, with the s03 banner and question.
@@ -151,11 +185,7 @@ test("permission path 2: an interactive approval really executes the destructive
       { content: [text("done")], stop_reason: "end_turn" },
     ]);
     const messages: Conversation = [{ role: "user", content: "remove victim.txt" }];
-    const registry = await createDefaultRegistry({ root: workspaceRoot });
-    await agentLoop(messages, {
-      client, model: "test-model", registry, hooks, workspaceRoot,
-      log: (message) => { logs.push(message); },
-    });
+    await runScriptedLoop(messages, { workspaceRoot, client, hooks, logs });
 
     const result = toolResultContent(messages, 2);
     assert.notEqual(result, "Permission denied.");
