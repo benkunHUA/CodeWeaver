@@ -19,8 +19,16 @@ export interface AgentLoopOptions {
   readonly hooks?: HookBus | undefined;
   readonly presenter?: ToolPresenter | undefined;
   readonly maxTokens?: number | undefined;
+  /** Cap on model requests a single run() may issue; omitted means no cap. */
+  readonly maxTurns?: number | undefined;
   readonly reminder?: ToolRoundReminder | undefined;
 }
+
+/**
+ * Why run() returned: the model stopped calling tools and no Stop handler
+ * forced a continue ("finished"), or the maxTurns cap was reached ("turn-limit").
+ */
+export type AgentLoopOutcome = "finished" | "turn-limit";
 
 /** Per-round reminder schedule; the loop owns no tool-specific knowledge. */
 export interface ToolRoundReminder {
@@ -39,6 +47,10 @@ const DEFAULT_MAX_TOKENS = 8000;
  *
  * Reminder scheduling is a port: the loop only decides *when* to ask and where
  * to append the injected text, while the injected strategy lives outside.
+ *
+ * `maxTurns` caps the number of model requests one run() may issue; once the cap
+ * is reached the loop returns "turn-limit" before asking the model again.
+ * Without it the loop keeps iterating until it returns "finished".
  */
 export class AgentLoop {
   readonly #client: ModelClient;
@@ -50,6 +62,7 @@ export class AgentLoop {
   readonly #presenter: ToolPresenter;
   readonly #maxTokens: number;
   readonly #reminder: ToolRoundReminder | undefined;
+  readonly #maxTurns: number | undefined;
 
   constructor(options: AgentLoopOptions) {
     this.#client = options.client;
@@ -61,11 +74,15 @@ export class AgentLoop {
     this.#presenter = options.presenter ?? new ConsoleToolPresenter();
     this.#maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
     this.#reminder = options.reminder;
+    this.#maxTurns = options.maxTurns;
   }
 
-  async run(session: Session): Promise<void> {
+  async run(session: Session): Promise<AgentLoopOutcome> {
     this.#reminder?.beginRun();
-    while (true) {
+    for (let turn = 0; ; turn += 1) {
+      if (this.#maxTurns !== undefined && turn >= this.#maxTurns) {
+        return "turn-limit";
+      }
       const response = await this.#client.messages.create({
         model: this.#model,
         system: this.#system,
@@ -88,7 +105,7 @@ export class AgentLoop {
           session.injectUser(forced);
           continue;
         }
-        return;
+        return "finished";
       }
 
       const results: ContentBlockParam[] = [];
@@ -100,7 +117,7 @@ export class AgentLoop {
           workspaceRoot: this.#workspaceRoot,
         });
         if (blocked !== undefined) {
-          this.#presenter.showResult(blocked);
+          this.#presenter.showResult(blocked, block.name);
           results.push({
             type: "tool_result",
             tool_use_id: block.id,
@@ -117,7 +134,7 @@ export class AgentLoop {
           result: output,
           workspaceRoot: this.#workspaceRoot,
         });
-        this.#presenter.showResult(output);
+        this.#presenter.showResult(output, block.name);
         results.push({
           type: "tool_result",
           tool_use_id: block.id,

@@ -3,7 +3,7 @@ import test from "node:test";
 import type { ContentBlock, ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages";
 import { Session } from "../src/agent/Session.js";
 import { ConsoleToolPresenter, SilentToolPresenter } from "../src/agent/ToolPresenter.js";
-import { systemPrompt } from "../src/agent/systemPrompt.js";
+import { subagentPrompt, systemPrompt } from "../src/agent/systemPrompt.js";
 import type { Conversation } from "../src/types.js";
 
 const text = (value: string): ContentBlock => ({
@@ -56,7 +56,7 @@ test("SilentToolPresenter never writes anything", () => {
   try {
     assert.doesNotThrow(() => {
       presenter.showToolCall("bash", { command: "printf hi" });
-      presenter.showResult("some result");
+      presenter.showResult("some result", "bash");
     });
   } finally {
     console.log = original;
@@ -92,7 +92,7 @@ test("ConsoleToolPresenter skips a bash call whose command is not a string", () 
 test("ConsoleToolPresenter previews at most 200 code points by default", () => {
   const lines: string[] = [];
   const presenter = new ConsoleToolPresenter({ log: (line) => lines.push(line) });
-  presenter.showResult("🚀".repeat(250));
+  presenter.showResult("🚀".repeat(250), "bash");
   assert.equal(lines.length, 1);
   const out = lines[0] ?? "";
   assert.equal(Array.from(out).length, 200);
@@ -105,7 +105,7 @@ test("ConsoleToolPresenter honours a custom previewLength", () => {
     log: (line) => lines.push(line),
     previewLength: 3,
   });
-  presenter.showResult("abcdef");
+  presenter.showResult("abcdef", "bash");
   assert.deepEqual(lines, ["abc"]);
 });
 
@@ -118,7 +118,7 @@ test("ConsoleToolPresenter defaults to console.log", () => {
   try {
     const presenter = new ConsoleToolPresenter();
     presenter.showToolCall("bash", { command: "printf hi" });
-    presenter.showResult("done");
+    presenter.showResult("done", "bash");
   } finally {
     console.log = original;
   }
@@ -128,6 +128,13 @@ test("ConsoleToolPresenter defaults to console.log", () => {
 test("systemPrompt keeps the migrated wording unchanged", () => {
   assert.equal(
     systemPrompt("/workspace"),
-    "你是一个位于 /workspace 的编程智能体。开始任何多步骤任务前，先用 todo_write 规划步骤，并在执行过程中持续更新状态。请使用工具解决问题，直接动手，不要只做解释。",
+    "你是一个位于 /workspace 的编程智能体。开始任何多步骤任务前，先用 todo_write 规划步骤，并在执行过程中持续更新状态。需要聚焦探索或边界清晰的子任务时，用 task 委派给子智能体。请使用工具解决问题，直接动手，不要只做解释。",
+  );
+});
+
+test("subagentPrompt keeps a fresh-conversation wording", () => {
+  assert.equal(
+    subagentPrompt("/workspace"),
+    "你是一个位于 /workspace 的编程智能体。完成交给你的任务后，返回简洁的最终结论。",
   );
 });

@@ -16,14 +16,14 @@ function isBashInput(input: unknown): input is { readonly command: string } {
 export interface ToolPresenter {
   /** Show the tool about to run. */
   showToolCall(name: string, input: unknown): void;
-  /** Show the tool result preview. */
-  showResult(result: string): void;
+  /** Show the tool result preview; `toolName` is the tool that produced it. */
+  showResult(result: string, toolName: string): void;
 }
 
 export class SilentToolPresenter implements ToolPresenter {
   showToolCall(_name: string, _input: unknown): void {}
 
-  showResult(_result: string): void {}
+  showResult(_result: string, _toolName: string): void {}
 }
 
 export interface ConsoleToolPresenterOptions {
@@ -50,7 +50,7 @@ export class ConsoleToolPresenter implements ToolPresenter {
     this.#log(`\x1b[33m$ ${input.command}\x1b[0m`);
   }
 
-  showResult(result: string): void {
+  showResult(result: string, _toolName: string): void {
     this.#log(sliceCharacters(result, this.#previewLength));
   }
 }

@@ -1,12 +1,19 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "dotenv";
 import type { ModelClient, ToolHooks } from "./types.js";
+import { subagentPrompt } from "./agent/systemPrompt.js";
 import { createDefaultHooks } from "./hooks/index.js";
 import type { HookBus } from "./hooks/index.js";
 import { ConsoleApprovalPrompt, createDefaultPermissionPipeline } from "./permission/index.js";
 import { TodoReminder, TodoStore } from "./planning/index.js";
+import {
+  ConsoleSubagentPresenter,
+  SUBAGENT_MAX_TURNS,
+  SubagentRunner,
+} from "./subagent/index.js";
 import { FileLockRegistry } from "./tools/core/FileLockRegistry.js";
 import { ToolContext } from "./tools/core/ToolContext.js";
+import { TaskTool } from "./tools/TaskTool.js";
 import { ToolRegistry } from "./tools/ToolRegistry.js";
 import { createDefaultTools } from "./tools/createDefaultTools.js";
 import { createWorkspace } from "./workspace.js";
@@ -33,6 +40,11 @@ export interface RuntimeConfig extends Config {
    * counter, so a single instance can be safely reused across questions.
    */
   readonly reminder: TodoReminder;
+  /**
+   * Delegation backend behind the parent's `task` tool. Exposed so the CLI and
+   * tests can reuse the same runner instead of wiring a second one.
+   */
+  readonly subagents: SubagentRunner;
 }
 
 export function loadConfig(): Config {
@@ -71,14 +83,54 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
     log: console.log,
     logger: console.error,
   });
+  const locks = new FileLockRegistry();
+  const logger = console.error;
+
+  // The subagent gets a fresh context but shares the workspace and the locks.
+  const subContext = new ToolContext({
+    workspace,
+    locks,
+    todos: new TodoStore(),
+    logger,
+  });
+  const subRegistry = new ToolRegistry({ context: subContext, hooks: config.toolHooks, logger });
+  // The six base tools only: a subagent has no `task`, so depth is fixed at one.
+  for (const tool of createDefaultTools()) subRegistry.register(tool);
+
+  const subagents = new SubagentRunner({
+    client: config.client,
+    model: config.model,
+    system: subagentPrompt(workspace.root),
+    registry: subRegistry,
+    workspaceRoot: workspace.root,
+    hooks,
+    // A separate instance: the child loop's beginRun() must not reset the
+    // parent's reminder counter.
+    reminder: new TodoReminder(),
+    maxTurns: SUBAGENT_MAX_TURNS,
+    presenter: new ConsoleSubagentPresenter({ log: console.log }),
+  });
+
+  // The parent gets one extra tool: `task`.
   const context = new ToolContext({
     workspace,
-    locks: new FileLockRegistry(),
+    locks,
     todos: new TodoStore(),
-    logger: console.error,
+    subagents,
+    logger,
   });
-  const registry = new ToolRegistry({ context, hooks: config.toolHooks, logger: console.error });
+  const registry = new ToolRegistry({ context, hooks: config.toolHooks, logger });
   for (const tool of createDefaultTools()) registry.register(tool);
+  registry.register(new TaskTool());
+
   const reminder = new TodoReminder();
-  return { ...config, workspaceRoot: workspace.root, hooks, registry, approval, reminder };
+  return {
+    ...config,
+    workspaceRoot: workspace.root,
+    hooks,
+    registry,
+    approval,
+    reminder,
+    subagents,
+  };
 }

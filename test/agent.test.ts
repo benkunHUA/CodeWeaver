@@ -117,8 +117,8 @@ class RecordingPresenter implements ToolPresenter {
     this.#events.push(`showToolCall:${name}`);
   }
 
-  showResult(result: string): void {
-    this.#events.push(`showResult:${result}`);
+  showResult(result: string, toolName: string): void {
+    this.#events.push(`showResult:${toolName}:${result}`);
   }
 }
 
@@ -232,7 +232,7 @@ test("TR-3.1: serial tools, multiple iterations, next user turn preserve history
     assert.deepEqual(requests[2]?.messages, messages.slice(0, 5));
     assert.equal(requests[0]?.max_tokens, 8000);
     assert.equal(requests[0]?.model, "test-model");
-    assert.equal(requests[0]?.system, "你是一个位于 /workspace 的编程智能体。开始任何多步骤任务前，先用 todo_write 规划步骤，并在执行过程中持续更新状态。请使用工具解决问题，直接动手，不要只做解释。");
+    assert.equal(requests[0]?.system, "你是一个位于 /workspace 的编程智能体。开始任何多步骤任务前，先用 todo_write 规划步骤，并在执行过程中持续更新状态。需要聚焦探索或边界清晰的子任务时，用 task 委派给子智能体。请使用工具解决问题，直接动手，不要只做解释。");
     assert.deepEqual(requests[0]?.tools, registry.schemas());
     assert.equal(requests[0]?.tools?.length ?? 0, 6);
 
@@ -479,7 +479,7 @@ test("an allowed call orders preToolUse, showToolCall, postToolUse and showResul
       "preToolUse",
       "showToolCall:order",
       "postToolUse",
-      "showResult:order-ran",
+      "showResult:order:order-ran",
     ]);
     assert.deepEqual(executed, ["ran"]);
     assert.deepEqual(messages[1], {
@@ -518,7 +518,7 @@ test("a PreToolUse block skips showToolCall and postToolUse and presents the blo
       presenter: new RecordingPresenter(events),
     });
     await loop.run(new Session(messages));
-    assert.deepEqual(events, ["preToolUse", "showResult:blocked-by-test"]);
+    assert.deepEqual(events, ["preToolUse", "showResult:order:blocked-by-test"]);
     assert.deepEqual(executed, [], "a blocked call must never reach the tool");
     assert.deepEqual(messages[1], {
       role: "user",
@@ -814,4 +814,149 @@ test("TodoReminder: threshold, toolName and text are injectable", () => {
   assert.equal(custom.afterToolRound(["bash"]), undefined);
   assert.equal(custom.afterToolRound(["bash"]), undefined);
   assert.equal(custom.afterToolRound(["bash"]), "<reminder>custom</reminder>");
+});
+
+test("without maxTurns run() returns finished and keeps the existing history", async () => {
+  const responses: ModelResponse[] = [
+    { content: [readTool("r1", "a.txt")], stop_reason: "tool_use" },
+    { content: [text("done")], stop_reason: "end_turn" },
+  ];
+  const { client, requests } = fakeClient(responses);
+  const messages: Conversation = [{ role: "user", content: "hello" }];
+  const root = await mkdtemp(join(tmpdir(), "cw-agent-outcome-"));
+  try {
+    await writeFile(join(root, "a.txt"), "alpha");
+    const registry = await buildRegistry(root);
+    const loop = new AgentLoop({
+      client,
+      model: "test",
+      system: systemPrompt(),
+      registry,
+      workspaceRoot: root,
+      presenter: new SilentToolPresenter(),
+    });
+    const outcome = await loop.run(new Session(messages));
+    assert.equal(outcome, "finished");
+    assert.equal(requests.length, 2);
+    assert.deepEqual(messages, [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: [readTool("r1", "a.txt")] },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "r1", content: "alpha" }],
+      },
+      { role: "assistant", content: [text("done")] },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("maxTurns: 1 returns turn-limit after one request and never triggers Stop", async () => {
+  const { client, requests } = fakeClient([
+    { content: [readTool("r1", "a.txt")], stop_reason: "tool_use" },
+    { content: [text("never reached")], stop_reason: "end_turn" },
+  ]);
+  const messages: Conversation = [{ role: "user", content: "hello" }];
+  const hooks = new HookBus();
+  let stops = 0;
+  hooks.register("Stop", () => {
+    stops += 1;
+  });
+  const root = await mkdtemp(join(tmpdir(), "cw-agent-max-turns-"));
+  try {
+    await writeFile(join(root, "a.txt"), "alpha");
+    const registry = await buildRegistry(root);
+    const loop = new AgentLoop({
+      client,
+      model: "test",
+      system: systemPrompt(),
+      registry,
+      workspaceRoot: root,
+      hooks,
+      presenter: new SilentToolPresenter(),
+      maxTurns: 1,
+    });
+    const outcome = await loop.run(new Session(messages));
+    assert.equal(outcome, "turn-limit");
+    assert.equal(requests.length, 1, "the cap is checked before asking the model again");
+    assert.equal(stops, 0, "a turn-limited run never reaches the Stop hook");
+    assert.deepEqual(messages[2], {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "r1", content: "alpha" }],
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("maxTurns: 2 allows a tool round and the closing text turn", async () => {
+  const { client, requests } = fakeClient([
+    { content: [readTool("r1", "a.txt")], stop_reason: "tool_use" },
+    { content: [text("done")], stop_reason: "end_turn" },
+  ]);
+  const messages: Conversation = [{ role: "user", content: "hello" }];
+  const root = await mkdtemp(join(tmpdir(), "cw-agent-max-turns-2-"));
+  try {
+    await writeFile(join(root, "a.txt"), "alpha");
+    const registry = await buildRegistry(root);
+    const loop = new AgentLoop({
+      client,
+      model: "test",
+      system: systemPrompt(),
+      registry,
+      workspaceRoot: root,
+      presenter: new SilentToolPresenter(),
+      maxTurns: 2,
+    });
+    const outcome = await loop.run(new Session(messages));
+    assert.equal(outcome, "finished");
+    assert.equal(requests.length, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the presenter receives the tool name for allowed and blocked results", async () => {
+  const { client } = fakeClient([
+    {
+      content: [tool("b", "echo hi"), readTool("r", "a.txt"), globTool("g", "*.txt")],
+      stop_reason: "tool_use",
+    },
+    { content: [text("done")], stop_reason: "end_turn" },
+  ]);
+  const messages: Conversation = [];
+  const events: string[] = [];
+  const hooks = new HookBus();
+  hooks.register("PreToolUse", (context) =>
+    context.toolName === "bash" ? "Permission denied." : undefined,
+  );
+  const root = await mkdtemp(join(tmpdir(), "cw-agent-tool-name-"));
+  try {
+    await writeFile(join(root, "a.txt"), "alpha");
+    const registry = await buildRegistry(root, {
+      overrides: [
+        new BashStubTool(async () => assert.fail("a blocked bash call must never reach the tool")),
+      ],
+    });
+    const loop = new AgentLoop({
+      client,
+      model: "test",
+      system: systemPrompt(),
+      registry,
+      workspaceRoot: root,
+      hooks,
+      presenter: new RecordingPresenter(events),
+    });
+    await loop.run(new Session(messages));
+    assert.deepEqual(events, [
+      "showResult:bash:Permission denied.",
+      "showToolCall:read_file",
+      "showResult:read_file:alpha",
+      "showToolCall:glob",
+      "showResult:glob:a.txt",
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
