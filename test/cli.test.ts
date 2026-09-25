@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -87,7 +87,7 @@ test("TR-3.2: compiled CLI uses real SDK, local dotenv override, bash+read+write
       assert.equal(request.body.max_tokens, 8000);
       assert.equal(request.key, "local-fake-key");
       assert.equal(request.auth, undefined);
-      assert.equal(Array.isArray(request.body.tools) ? request.body.tools.length : 0, 8);
+      assert.equal(Array.isArray(request.body.tools) ? request.body.tools.length : 0, 9);
     }
     // The parent system prompt carries the scanned skills catalog, proving the
     // CLI injected the real `<workspace>/skills` directory into systemPrompt().
@@ -103,6 +103,70 @@ test("TR-3.2: compiled CLI uses real SDK, local dotenv override, bash+read+write
     });
     assert.equal(fifthHistory.length, 9);
     assert.deepEqual(fifthHistory[8], { role: "user", content: "second question" });
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("the compact tool finishes its batch, archives it and continues from the summary", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "agent-ts-compact-"));
+  const requests: Array<Record<string, unknown>> = [];
+  const server = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    requests.push(JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>);
+    const round = requests.length;
+    const content = round === 1
+      ? [
+          { type: "tool_use", id: "c1", name: "bash", input: { command: "printf hi" } },
+          { type: "tool_use", id: "c2", name: "compact", input: {} },
+        ]
+      : round === 2
+        ? [{ type: "text", text: "the user greeted, then asked to compact", citations: null }]
+        : [{ type: "text", text: "continued after compaction", citations: null }];
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      id: `msg_${round}`, type: "message", role: "assistant", model: "local-test",
+      content, stop_reason: round === 1 ? "tool_use" : "end_turn", stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }));
+  });
+  try {
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const result = await runProcess(cwd, "hello\nq\n", {
+      ANTHROPIC_BASE_URL: `http://127.0.0.1:${address.port}`,
+      ANTHROPIC_API_KEY: "fake-key",
+      MODEL_ID: "local-test",
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(requests.length, 3, "tool round, summary request, continuation");
+
+    // The summarizer is called with the closed batch, no tools and its own prompt.
+    const summary = requests[1]!;
+    assert.equal(summary.tools, undefined);
+    assert.equal(summary.max_tokens, 2000);
+    assert.match(String(summary.system), /Summarize the supplied coding-agent conversation/);
+    const summaryInput = summary.messages as Array<{ readonly content: string }>;
+    assert.equal(summaryInput.length, 1);
+    assert.match(summaryInput[0]!.content, /printf hi/);
+    assert.match(summaryInput[0]!.content, /Compaction requested after this tool batch\./);
+
+    // The continuation runs from one [Compacted] message that separates the
+    // active request from the summary.
+    const continued = (requests[2]!.messages as Array<{ readonly content: unknown }>)[0]!.content as string;
+    assert.ok(continued.startsWith("[Compacted]\n\nCurrent user request:\nhello\n\n"));
+    assert.match(continued, /Conversation summary \(reference only\):\n"the user greeted, then asked to compact"/);
+
+    assert.match(result.stdout, /continued after compaction/);
+    assert.ok(result.stdout.includes("[transcript 已保存："));
+    const transcripts = await readdir(join(cwd, ".transcripts"));
+    assert.equal(transcripts.length, 1, "exactly one transcript is written");
+    const archived = await readFile(join(cwd, ".transcripts", transcripts[0]!), "utf8");
+    assert.equal(archived.trimEnd().split("\n").length, 3, "user, assistant(tool_use x2), user(tool_result x2)");
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));

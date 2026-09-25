@@ -305,7 +305,9 @@ test("tool classes execute like the previous free functions", async () => {
 
 // --- ToolRegistry / createDefaultTools -------------------------------------
 
-const DEFAULT_TOOL_NAMES = ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write", "load_skill"];
+const DEFAULT_TOOL_NAMES = [
+  "bash", "read_file", "write_file", "edit_file", "glob", "todo_write", "load_skill", "compact",
+];
 
 /** Standalone echo tool registered under `bash`; the name cannot be reused from `EchoTool`. */
 class BashEchoTool extends Tool<{ value: string }> {

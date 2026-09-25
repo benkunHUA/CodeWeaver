@@ -325,7 +325,7 @@ test("TR-2.5: todo_write declares the s05 schema, renders and reports domain err
 
     assert.deepEqual(
       registry.list().map((tool) => tool.name),
-      ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write", "load_skill"],
+      ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write", "load_skill", "compact"],
     );
 
     assert.equal(
@@ -476,10 +476,10 @@ test("load_skill fails closed when the context has no skill library", async () =
   }
 });
 
-test("createDefaultTools returns the seven built-in tools in order", () => {
+test("createDefaultTools returns the eight built-in tools in order", () => {
   assert.deepEqual(
     createDefaultTools().map((tool) => tool.name),
-    ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write", "load_skill"],
+    ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write", "load_skill", "compact"],
   );
 });
 

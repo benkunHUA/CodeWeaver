@@ -3,6 +3,8 @@ import type {
   ContentBlockParam,
   ToolUseBlock,
 } from "@anthropic-ai/sdk/resources/messages";
+import type { CompactionPort } from "../compaction/index.js";
+import { MAX_REACTIVE_RETRIES } from "../compaction/index.js";
 import type { HookBus } from "../hooks/HookBus.js";
 import type { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { ModelClient } from "../types.js";
@@ -22,6 +24,11 @@ export interface AgentLoopOptions {
   /** Cap on model requests a single run() may issue; omitted means no cap. */
   readonly maxTurns?: number | undefined;
   readonly reminder?: ToolRoundReminder | undefined;
+  /**
+   * Optional compaction port. When omitted, the loop behaves exactly as before:
+   * the conversation is sent as-is and an oversized-prompt rejection escapes.
+   */
+  readonly compaction?: CompactionPort | undefined;
 }
 
 /**
@@ -51,6 +58,12 @@ const DEFAULT_MAX_TOKENS = 8000;
  * `maxTurns` caps the number of model requests one run() may issue; once the cap
  * is reached the loop returns "turn-limit" before asking the model again.
  * Without it the loop keeps iterating until it returns "finished".
+ *
+ * Compaction is an optional port: `prepare` runs before every request and may
+ * rewrite the history, `afterBatch` runs once a tool batch has closed (so no
+ * orphan tool_result is left behind), and a request rejected for an oversized
+ * prompt is answered by one `reactive` rewrite plus a single retry per run().
+ * Which tools request compaction is the port's decision, never the loop's.
  */
 export class AgentLoop {
   readonly #client: ModelClient;
@@ -63,6 +76,7 @@ export class AgentLoop {
   readonly #maxTokens: number;
   readonly #reminder: ToolRoundReminder | undefined;
   readonly #maxTurns: number | undefined;
+  readonly #compaction: CompactionPort | undefined;
 
   constructor(options: AgentLoopOptions) {
     this.#client = options.client;
@@ -75,21 +89,48 @@ export class AgentLoop {
     this.#maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
     this.#reminder = options.reminder;
     this.#maxTurns = options.maxTurns;
+    this.#compaction = options.compaction;
   }
 
   async run(session: Session): Promise<AgentLoopOutcome> {
     this.#reminder?.beginRun();
+    // Reactive retries are scoped to one run(); a fresh run() starts over.
+    let reactiveRetries = 0;
     for (let turn = 0; ; turn += 1) {
       if (this.#maxTurns !== undefined && turn >= this.#maxTurns) {
         return "turn-limit";
       }
-      const response = await this.#client.messages.create({
-        model: this.#model,
-        system: this.#system,
-        messages: session.messages,
-        tools: this.#registry.schemas(),
-        max_tokens: this.#maxTokens,
-      });
+      const compaction = this.#compaction;
+      if (compaction) {
+        // Compaction runs before every request and may rewrite the history.
+        session.replace(await compaction.prepare(session.messages, session.activeRequest));
+      }
+
+      let response;
+      try {
+        response = await this.#client.messages.create({
+          model: this.#model,
+          system: this.#system,
+          messages: session.messages,
+          tools: this.#registry.schemas(),
+          max_tokens: this.#maxTokens,
+        });
+        // A successful request resets the retry allowance.
+        reactiveRetries = 0;
+      } catch (error) {
+        // A reactive retry re-sends the request, so it counts as a model request
+        // towards maxTurns: `continue` advances the loop counter.
+        if (
+          compaction
+          && compaction.isPromptTooLong(error)
+          && reactiveRetries < MAX_REACTIVE_RETRIES
+        ) {
+          session.replace(await compaction.reactive(session.messages, session.activeRequest));
+          reactiveRetries += 1;
+          continue;
+        }
+        throw error;
+      }
 
       session.appendAssistant(response.content as ContentBlock[]);
       const toolCalls = response.content.filter(
@@ -144,6 +185,12 @@ export class AgentLoop {
       const reminder = this.#reminder?.afterToolRound(executed);
       if (reminder !== undefined) results.push({ type: "text", text: reminder });
       session.appendToolResults(results);
+      // Compact only after the batch has closed, so no orphan tool_result remains.
+      if (compaction) {
+        session.replace(
+          await compaction.afterBatch(session.messages, executed, session.activeRequest),
+        );
+      }
     }
   }
 }

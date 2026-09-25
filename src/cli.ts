@@ -47,7 +47,9 @@ export async function runCli(options: CliOptions): Promise<void> {
     for await (const query of rl) {
       if (["q", "exit", ""].includes(stripWhitespace(query).toLowerCase())) break;
       await options.hooks.trigger("UserPromptSubmit", { query, workspaceRoot: options.workspaceRoot });
-      history.push({ role: "user", content: query });
+      // Records this turn's request so compaction can keep it apart from the
+      // conversation summary; `history` is the very array it mutates.
+      session.appendUser(query);
       await options.loop.run(session);
       const content = history.at(-1)?.content;
       if (Array.isArray(content)) {
@@ -75,6 +77,7 @@ async function main(): Promise<void> {
       hooks: runtime.hooks,
       presenter: new ConsoleToolPresenter({ log: console.log }),
       reminder: runtime.reminder,
+      compaction: runtime.compaction,
     });
     await runCli({
       loop,

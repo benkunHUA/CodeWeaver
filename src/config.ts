@@ -3,6 +3,7 @@ import { config } from "dotenv";
 import { join } from "node:path";
 import type { ModelClient, ToolHooks } from "./types.js";
 import { subagentPrompt } from "./agent/systemPrompt.js";
+import { ContextCompactor, ToolResultStore, TranscriptArchive } from "./compaction/index.js";
 import { createDefaultHooks } from "./hooks/index.js";
 import type { HookBus } from "./hooks/index.js";
 import { ConsoleApprovalPrompt, createDefaultPermissionPipeline } from "./permission/index.js";
@@ -53,6 +54,12 @@ export interface RuntimeConfig extends Config {
    * the same instance is shared by the parent and the subagent.
    */
   readonly skills: SkillLoader;
+  /**
+   * The one compaction pipeline both loops run against. It is stateless (all
+   * state lives in the workspace directories), so the parent and the subagent
+   * can safely share the instance while keeping separate conversations.
+   */
+  readonly compaction: ContextCompactor;
 }
 
 export function loadConfig(): Config {
@@ -94,6 +101,19 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
   const locks = new FileLockRegistry();
   const logger = console.error;
 
+  // s08 artifacts live inside the workspace so the model can read them back:
+  // `.transcripts/` keeps whole histories, `.task_outputs/tool-results/` keeps
+  // the full text behind every recoverable placeholder.
+  const archive = new TranscriptArchive({ dir: join(workspace.root, ".transcripts") });
+  const results = new ToolResultStore({ dir: join(workspace.root, ".task_outputs", "tool-results") });
+  const compaction = new ContextCompactor({
+    client: config.client,
+    model: config.model,
+    archive,
+    results,
+    log: console.log,
+  });
+
   // Scan the skills directory once; the same library feeds both prompts and the
   // `load_skill` tool, so the parent and the subagent share one snapshot.
   const skills = await SkillLoader.scan({ dir: join(workspace.root, "skills") });
@@ -108,7 +128,8 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
     logger,
   });
   const subRegistry = new ToolRegistry({ context: subContext, hooks: config.toolHooks, logger });
-  // The seven base tools only: a subagent has no `task`, so depth is fixed at one.
+  // The eight base tools only: a subagent has no `task`, so depth is fixed at
+  // one, but it can still compact its own history.
   for (const tool of createDefaultTools()) subRegistry.register(tool);
 
   const subagents = new SubagentRunner({
@@ -123,6 +144,7 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
     reminder: new TodoReminder(),
     maxTurns: SUBAGENT_MAX_TURNS,
     presenter: new ConsoleSubagentPresenter({ log: console.log }),
+    compaction,
   });
 
   // The parent gets one extra tool: `task`.
@@ -148,5 +170,6 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
     reminder,
     subagents,
     skills,
+    compaction,
   };
 }

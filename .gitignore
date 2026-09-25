@@ -5,4 +5,6 @@ dist/
 !.env.example
 *.log
 .trae/
-.DS_Store
+# s08 compaction artifacts, written inside the workspace while the agent runs.
+.transcripts/
+.task_outputs/

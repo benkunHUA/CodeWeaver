@@ -10,6 +10,7 @@ import {
 } from "../src/skills/index.js";
 import { subagentPrompt, systemPrompt } from "../src/agent/systemPrompt.js";
 import { loadRuntimeConfig } from "../src/config.js";
+import { ContextCompactor } from "../src/compaction/index.js";
 import { TodoStore } from "../src/planning/index.js";
 import type { SubagentLauncher } from "../src/subagent/types.js";
 import { FileLockRegistry } from "../src/tools/core/FileLockRegistry.js";
@@ -286,8 +287,8 @@ test("assembly mirrors config: parent gets task while both loops share one skill
 
     const parentNames = parentRegistry.list().map((tool) => tool.name);
     const childNames = childRegistry.list().map((tool) => tool.name);
-    assert.equal(parentNames.length, 8);
-    assert.equal(childNames.length, 7);
+    assert.equal(parentNames.length, 9);
+    assert.equal(childNames.length, 8);
     assert.ok(parentNames.includes("task"));
     assert.ok(!childNames.includes("task"));
 
@@ -328,9 +329,11 @@ test("loadRuntimeConfig scans the workspace skills directory into the registry",
     assert.equal(runtime.skills.catalog(), "- demo: Demo skill summary.");
 
     const names = runtime.registry.list().map((tool) => tool.name);
-    assert.equal(names.length, 8);
+    assert.equal(names.length, 9);
     assert.ok(names.includes("task"));
+    assert.ok(names.includes("compact"));
     assert.ok(names.includes("load_skill"));
+    assert.ok(runtime.compaction instanceof ContextCompactor, "the runtime exposes the compactor");
   } finally {
     restoreEnv("MODEL_ID", previous.model);
     restoreEnv("ANTHROPIC_API_KEY", previous.key);

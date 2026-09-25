@@ -1,6 +1,7 @@
 import type { MessageParam } from "@anthropic-ai/sdk/resources/messages";
 import { AgentLoop, type ToolRoundReminder } from "../agent/AgentLoop.js";
 import { Session } from "../agent/Session.js";
+import type { CompactionPort } from "../compaction/index.js";
 import type { HookBus } from "../hooks/HookBus.js";
 import type { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { ModelClient } from "../types.js";
@@ -31,6 +32,11 @@ export interface SubagentRunnerOptions {
   readonly maxTokens?: number | undefined;
   /** Defaults to `ConsoleSubagentPresenter`. */
   readonly presenter?: SubagentPresenter | undefined;
+  /**
+   * Compaction is injected rather than built here: the child session has its own
+   * messages and `activeRequest`, so the same port simply runs against them.
+   */
+  readonly compaction?: CompactionPort | undefined;
 }
 
 /**
@@ -60,12 +66,16 @@ export class SubagentRunner implements SubagentLauncher {
       hooks: options.hooks,
       reminder: options.reminder,
       maxTokens: options.maxTokens,
+      compaction: options.compaction,
     });
   }
 
   async run(prompt: string): Promise<string> {
     this.#presenter.showStart();
-    const session = new Session([{ role: "user", content: prompt }]);
+    // `appendUser` (not the constructor) records the prompt as the active
+    // request, so a child compaction keeps it apart from its own summary.
+    const session = new Session();
+    session.appendUser(prompt);
     const outcome = await this.#loop.run(session);
     if (outcome === "turn-limit") {
       this.#presenter.showStopped();
