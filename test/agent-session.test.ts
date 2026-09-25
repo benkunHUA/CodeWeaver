@@ -125,16 +125,27 @@ test("ConsoleToolPresenter defaults to console.log", () => {
   assert.deepEqual(lines, ["\x1b[33m$ printf hi\x1b[0m", "done"]);
 });
 
-test("systemPrompt keeps the migrated wording unchanged", () => {
+test("systemPrompt keeps the migrated wording plus a default skills catalog", () => {
   assert.equal(
     systemPrompt("/workspace"),
-    "你是一个位于 /workspace 的编程智能体。开始任何多步骤任务前，先用 todo_write 规划步骤，并在执行过程中持续更新状态。需要聚焦探索或边界清晰的子任务时，用 task 委派给子智能体。请使用工具解决问题，直接动手，不要只做解释。",
+    "你是一个位于 /workspace 的编程智能体。开始任何多步骤任务前，先用 todo_write 规划步骤，并在执行过程中持续更新状态。需要聚焦探索或边界清晰的子任务时，用 task 委派给子智能体。请使用工具解决问题，直接动手，不要只做解释。\n\n可用技能：\n(no skills found)\n\n当某个技能适用于当前任务时，用 load_skill 读取它的完整说明。",
   );
 });
 
-test("subagentPrompt keeps a fresh-conversation wording", () => {
+test("subagentPrompt keeps a fresh-conversation wording plus a default skills catalog", () => {
   assert.equal(
     subagentPrompt("/workspace"),
-    "你是一个位于 /workspace 的编程智能体。完成交给你的任务后，返回简洁的最终结论。",
+    "你是一个位于 /workspace 的编程智能体。完成交给你的任务后，返回简洁的最终结论。\n\n可用技能：\n(no skills found)\n\n当某个技能适用于当前任务时，用 load_skill 读取它的完整说明。",
+  );
+});
+
+test("both prompts embed a custom skills catalog verbatim", () => {
+  assert.equal(
+    systemPrompt("/workspace", "- demo: 演示技能"),
+    "你是一个位于 /workspace 的编程智能体。开始任何多步骤任务前，先用 todo_write 规划步骤，并在执行过程中持续更新状态。需要聚焦探索或边界清晰的子任务时，用 task 委派给子智能体。请使用工具解决问题，直接动手，不要只做解释。\n\n可用技能：\n- demo: 演示技能\n\n当某个技能适用于当前任务时，用 load_skill 读取它的完整说明。",
+  );
+  assert.equal(
+    subagentPrompt("/workspace", "- demo: 演示技能"),
+    "你是一个位于 /workspace 的编程智能体。完成交给你的任务后，返回简洁的最终结论。\n\n可用技能：\n- demo: 演示技能\n\n当某个技能适用于当前任务时，用 load_skill 读取它的完整说明。",
   );
 });

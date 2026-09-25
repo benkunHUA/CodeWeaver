@@ -1,11 +1,13 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "dotenv";
+import { join } from "node:path";
 import type { ModelClient, ToolHooks } from "./types.js";
 import { subagentPrompt } from "./agent/systemPrompt.js";
 import { createDefaultHooks } from "./hooks/index.js";
 import type { HookBus } from "./hooks/index.js";
 import { ConsoleApprovalPrompt, createDefaultPermissionPipeline } from "./permission/index.js";
 import { TodoReminder, TodoStore } from "./planning/index.js";
+import { SkillLoader } from "./skills/index.js";
 import {
   ConsoleSubagentPresenter,
   SUBAGENT_MAX_TURNS,
@@ -45,6 +47,12 @@ export interface RuntimeConfig extends Config {
    * tests can reuse the same runner instead of wiring a second one.
    */
   readonly subagents: SubagentRunner;
+  /**
+   * Skills scanned once at startup from `<workspace.root>/skills`. It is both
+   * the source of the prompt catalog and the data source for `load_skill`, and
+   * the same instance is shared by the parent and the subagent.
+   */
+  readonly skills: SkillLoader;
 }
 
 export function loadConfig(): Config {
@@ -86,21 +94,27 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
   const locks = new FileLockRegistry();
   const logger = console.error;
 
-  // The subagent gets a fresh context but shares the workspace and the locks.
+  // Scan the skills directory once; the same library feeds both prompts and the
+  // `load_skill` tool, so the parent and the subagent share one snapshot.
+  const skills = await SkillLoader.scan({ dir: join(workspace.root, "skills") });
+
+  // The subagent gets a fresh context but shares the workspace, the locks and
+  // the skill library.
   const subContext = new ToolContext({
     workspace,
     locks,
     todos: new TodoStore(),
+    skills,
     logger,
   });
   const subRegistry = new ToolRegistry({ context: subContext, hooks: config.toolHooks, logger });
-  // The six base tools only: a subagent has no `task`, so depth is fixed at one.
+  // The seven base tools only: a subagent has no `task`, so depth is fixed at one.
   for (const tool of createDefaultTools()) subRegistry.register(tool);
 
   const subagents = new SubagentRunner({
     client: config.client,
     model: config.model,
-    system: subagentPrompt(workspace.root),
+    system: subagentPrompt(workspace.root, skills.catalog()),
     registry: subRegistry,
     workspaceRoot: workspace.root,
     hooks,
@@ -117,6 +131,7 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
     locks,
     todos: new TodoStore(),
     subagents,
+    skills,
     logger,
   });
   const registry = new ToolRegistry({ context, hooks: config.toolHooks, logger });
@@ -132,5 +147,6 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
     approval,
     reminder,
     subagents,
+    skills,
   };
 }

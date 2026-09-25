@@ -60,14 +60,14 @@ class MismatchedSchemaTool extends BashStubTool {
   }
 }
 
-test("TR-1.1: listTools & getSchemas expose six-tool shape", async () => {
+test("TR-1.1: listTools & getSchemas expose seven-tool shape", async () => {
   const registry = registryOf(createDefaultTools());
   assert.deepEqual(
     registry.list().map((tool) => tool.name),
-    ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write"],
+    ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write", "load_skill"],
   );
   const schemas = registry.schemas();
-  assert.equal(schemas.length, 6);
+  assert.equal(schemas.length, 7);
   for (const schema of schemas) {
     assert.ok(schema.name);
     assert.ok(schema.description);

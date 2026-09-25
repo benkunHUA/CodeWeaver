@@ -6,9 +6,11 @@ import { join } from "node:path";
 import { COMMAND_TIMEOUT_MS, OUTPUT_LIMIT, runBash, sliceCharacters } from "../src/bash.js";
 import { createWorkspace } from "../src/workspace.js";
 import { TODO_STATUSES } from "../src/planning/index.js";
+import { SkillLoader } from "../src/skills/index.js";
 import { FileLockRegistry } from "../src/tools/core/FileLockRegistry.js";
 import { ToolContext } from "../src/tools/core/ToolContext.js";
 import { ToolRegistry } from "../src/tools/ToolRegistry.js";
+import { LoadSkillTool } from "../src/tools/LoadSkillTool.js";
 import { TodoWriteTool } from "../src/tools/TodoWriteTool.js";
 import { createDefaultTools } from "../src/tools/createDefaultTools.js";
 
@@ -323,7 +325,7 @@ test("TR-2.5: todo_write declares the s05 schema, renders and reports domain err
 
     assert.deepEqual(
       registry.list().map((tool) => tool.name),
-      ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write"],
+      ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write", "load_skill"],
     );
 
     assert.equal(
@@ -395,6 +397,109 @@ test("TR-2.5: todo_write declares the s05 schema, renders and reports domain err
     assert.equal(
       await registry.invoke("todo_write", { todos: [{ content: "  pad  ", status: "PENDING" }] }),
       "[ ] pad\n\n(0/1 completed)",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("load_skill declares a verbatim schema with a Chinese description", () => {
+  const tool = new LoadSkillTool();
+  assert.deepEqual(tool.inputSchema, {
+    type: "object",
+    properties: { name: { type: "string" } },
+    required: ["name"],
+  });
+  const schema = tool.toAnthropicSchema();
+  assert.equal(schema.name, "load_skill");
+  assert.equal(schema.description, "按名称读取某个技能的完整说明（SKILL.md）。");
+  assert.deepEqual(schema.input_schema, {
+    type: "object",
+    properties: { name: { type: "string" } },
+    required: ["name"],
+  });
+});
+
+test("load_skill rejects a call without a name", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cw-tool-skill-input-"));
+  try {
+    const workspace = await createWorkspace(root);
+    const context = new ToolContext({ workspace, locks: new FileLockRegistry() });
+    const registry = new ToolRegistry({ context });
+    for (const tool of createDefaultTools()) registry.register(tool);
+    assert.equal(
+      await registry.invoke("load_skill", {}),
+      "Error: Invalid input for load_skill: name is required",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("load_skill forwards the requested name to the injected library", async () => {
+  const received: string[] = [];
+  const skills = {
+    catalog: () => "- code-review: reviews code",
+    load: (name: string): string => {
+      received.push(name);
+      return `SKILL(${name})`;
+    },
+  };
+  const root = await mkdtemp(join(tmpdir(), "cw-tool-skill-fake-"));
+  try {
+    const workspace = await createWorkspace(root);
+    const context = new ToolContext({ workspace, locks: new FileLockRegistry(), skills });
+    const registry = new ToolRegistry({ context });
+    registry.register(new LoadSkillTool());
+    assert.equal(await registry.invoke("load_skill", { name: "code-review" }), "SKILL(code-review)");
+    assert.deepEqual(received, ["code-review"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("load_skill fails closed when the context has no skill library", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cw-tool-skill-none-"));
+  try {
+    const workspace = await createWorkspace(root);
+    const context = new ToolContext({ workspace, locks: new FileLockRegistry() });
+    assert.equal(context.skills, undefined);
+    const registry = new ToolRegistry({ context });
+    registry.register(new LoadSkillTool());
+    // The failure is reported as an error string; `invoke` never throws.
+    assert.equal(
+      await registry.invoke("load_skill", { name: "demo" }),
+      "Error: Skill loading is not available in this context",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("createDefaultTools returns the seven built-in tools in order", () => {
+  assert.deepEqual(
+    createDefaultTools().map((tool) => tool.name),
+    ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write", "load_skill"],
+  );
+});
+
+test("load_skill serves the full SKILL.md text through a real SkillLoader", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cw-tool-skill-real-"));
+  try {
+    const skillDir = join(root, "skills");
+    await mkdir(join(skillDir, "demo"), { recursive: true });
+    const content = "---\nname: demo\ndescription: A demo skill\n---\n\n# Demo\n\nBody text.\n";
+    await writeFile(join(skillDir, "demo", "SKILL.md"), content);
+    const skills = await SkillLoader.scan({ dir: skillDir });
+    const workspace = await createWorkspace(root);
+    const context = new ToolContext({ workspace, locks: new FileLockRegistry(), skills });
+    const registry = new ToolRegistry({ context });
+    registry.register(new LoadSkillTool());
+    // The raw document, frontmatter included, round-trips unchanged.
+    assert.equal(await registry.invoke("load_skill", { name: "demo" }), content);
+    assert.equal(
+      await registry.invoke("load_skill", { name: "nope" }),
+      "Error: Unknown skill 'nope'. Available: demo",
     );
   } finally {
     await rm(root, { recursive: true, force: true });

@@ -12,6 +12,7 @@ import type { JsonSchemaObject } from "../src/tools/core/validate.js";
 import { BashTool } from "../src/tools/BashTool.js";
 import { EditFileTool } from "../src/tools/EditFileTool.js";
 import { GlobTool } from "../src/tools/GlobTool.js";
+import { LoadSkillTool } from "../src/tools/LoadSkillTool.js";
 import { ReadFileTool } from "../src/tools/ReadFileTool.js";
 import { TodoWriteTool } from "../src/tools/TodoWriteTool.js";
 import { WriteFileTool } from "../src/tools/WriteFileTool.js";
@@ -250,6 +251,11 @@ test("tool classes declare the documented name, description and schema", () => {
       },
       required: ["todos"],
     }],
+    [new LoadSkillTool(), "load_skill", "按名称读取某个技能的完整说明（SKILL.md）。", {
+      type: "object",
+      properties: { name: { type: "string" } },
+      required: ["name"],
+    }],
   ] as const;
   for (const [tool, name, description, expectedSchema] of expected) {
     const schema = tool.toAnthropicSchema();
@@ -265,7 +271,7 @@ test("tool classes declare the documented name, description and schema", () => {
   }
   assert.deepEqual(
     expected.map(([, name]) => name).sort(),
-    ["bash", "edit_file", "glob", "read_file", "todo_write", "write_file"],
+    ["bash", "edit_file", "glob", "load_skill", "read_file", "todo_write", "write_file"],
   );
 });
 
@@ -299,7 +305,7 @@ test("tool classes execute like the previous free functions", async () => {
 
 // --- ToolRegistry / createDefaultTools -------------------------------------
 
-const DEFAULT_TOOL_NAMES = ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write"];
+const DEFAULT_TOOL_NAMES = ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write", "load_skill"];
 
 /** Standalone echo tool registered under `bash`; the name cannot be reused from `EchoTool`. */
 class BashEchoTool extends Tool<{ value: string }> {

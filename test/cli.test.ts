@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,6 +52,13 @@ test("TR-3.2: compiled CLI uses real SDK, local dotenv override, bash+read+write
   });
   try {
     await writeFile(join(cwd, "seed.txt"), "seeded");
+    // A real skills directory in the CLI workspace: the compiled cli.ts scans it
+    // at startup and injects the catalog into the parent system prompt.
+    await mkdir(join(cwd, "skills", "demo"), { recursive: true });
+    await writeFile(
+      join(cwd, "skills", "demo", "SKILL.md"),
+      "---\nname: demo\ndescription: Demo skill summary.\n---\n\n# Demo\n\nBody text.\n",
+    );
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     assert.ok(address && typeof address !== "string");
@@ -80,8 +87,13 @@ test("TR-3.2: compiled CLI uses real SDK, local dotenv override, bash+read+write
       assert.equal(request.body.max_tokens, 8000);
       assert.equal(request.key, "local-fake-key");
       assert.equal(request.auth, undefined);
-      assert.equal(Array.isArray(request.body.tools) ? request.body.tools.length : 0, 7);
+      assert.equal(Array.isArray(request.body.tools) ? request.body.tools.length : 0, 8);
     }
+    // The parent system prompt carries the scanned skills catalog, proving the
+    // CLI injected the real `<workspace>/skills` directory into systemPrompt().
+    const system = requests[0]?.body.system as string;
+    assert.match(system, /可用技能：/);
+    assert.match(system, /- demo: Demo skill summary\./);
     assert.equal((requests[0]?.body.messages as unknown[]).length, 1);
     const thirdHistory = requests[2]?.body.messages as unknown[];
     const fifthHistory = requests[4]?.body.messages as unknown[];

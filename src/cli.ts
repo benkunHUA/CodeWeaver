@@ -69,7 +69,7 @@ async function main(): Promise<void> {
     const loop = new AgentLoop({
       client: runtime.client,
       model: runtime.model,
-      system: systemPrompt(runtime.workspaceRoot),
+      system: systemPrompt(runtime.workspaceRoot, runtime.skills.catalog()),
       registry: runtime.registry,
       workspaceRoot: runtime.workspaceRoot,
       hooks: runtime.hooks,

@@ -1,5 +1,6 @@
 import type { Workspace } from "../../types.js";
 import { TodoStore } from "../../planning/TodoStore.js";
+import type { SkillLibrary } from "../../skills/types.js";
 import type { SubagentLauncher } from "../../subagent/types.js";
 import type { FileLockRegistry } from "./FileLockRegistry.js";
 
@@ -10,6 +11,7 @@ export interface ToolContextOptions {
   readonly logger?: ((message: string) => void) | undefined;
   readonly todos?: TodoStore | undefined;
   readonly subagents?: SubagentLauncher | undefined;
+  readonly skills?: SkillLibrary | undefined;
 }
 
 /** Everything a tool needs at runtime, without any global mutable state. */
@@ -30,6 +32,12 @@ export class ToolContext {
    * launcher": a context without a launcher must fail closed.
    */
   readonly subagents: SubagentLauncher | undefined;
+  /**
+   * Skill lookup port the `load_skill` tool reads from. `undefined` means
+   * "this context has no skill library", so a tool that depends on it must fail
+   * closed instead of fabricating an empty library.
+   */
+  readonly skills: SkillLibrary | undefined;
 
   constructor(options: ToolContextOptions) {
     this.workspace = options.workspace;
@@ -37,5 +45,6 @@ export class ToolContext {
     this.logger = options.logger ?? (() => {});
     this.todos = options.todos ?? new TodoStore();
     this.subagents = options.subagents;
+    this.skills = options.skills;
   }
 }

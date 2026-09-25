@@ -46,7 +46,7 @@ class BashStubTool extends BashTool {
 /**
  * The s02 request contract has exactly five tools. `todo_write` was added in
  * s05, so the registries compared against the lesson are built explicitly here
- * instead of using `createDefaultTools()`, which now returns six.
+ * instead of using `createDefaultTools()`, which now returns seven.
  */
 function s02Tools(bash: Tool<unknown> = new BashTool()): Tool<unknown>[] {
   return [bash, new ReadFileTool(), new WriteFileTool(), new EditFileTool(), new GlobTool()];

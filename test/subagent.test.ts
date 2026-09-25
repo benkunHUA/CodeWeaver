@@ -410,7 +410,7 @@ test("a subagent has no task tool, so it cannot delegate again", async () => {
     const result = await runner.run("delegate further");
 
     assert.equal(registry.get("task"), undefined);
-    assert.equal(registry.schemas().length, 6, "the child registry only has the six base tools");
+    assert.equal(registry.schemas().length, 7, "the child registry only has the seven base tools");
     assert.deepEqual(observed, ["task:Unknown: task"]);
     assert.equal(requests.length, 2);
     assert.equal(result, "child done");
@@ -594,7 +594,7 @@ test("SilentSubagentPresenter never writes anything", () => {
   }
 });
 
-/** The six base tools plus the real `task` tool, run against a fresh context. */
+/** The seven base tools plus the real `task` tool, run against a fresh context. */
 async function buildParentRegistry(
   root: string,
   launcher?: SubagentLauncher | undefined,
@@ -672,10 +672,10 @@ test("the task tool fails closed when the context forbids delegation", async () 
   }
 });
 
-test("createDefaultTools() still returns the six base tools without task", () => {
+test("createDefaultTools() still returns the seven base tools without task", () => {
   assert.deepEqual(
     createDefaultTools().map((tool) => tool.name),
-    ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write"],
+    ["bash", "read_file", "write_file", "edit_file", "glob", "todo_write", "load_skill"],
   );
 });
 
@@ -723,7 +723,7 @@ class RecordingToolPresenter implements ToolPresenter {
 
 /**
  * Parent/child wiring mirroring `src/config.ts`: one workspace and one lock
- * registry shared by both sides, a child context holding only the six base
+ * registry shared by both sides, a child context holding only the seven base
  * tools, and a parent context that adds the delegation port plus the real
  * `task` tool. Each side owns its own `TodoStore` and `TodoReminder`.
  */
@@ -797,8 +797,8 @@ test("the wired parent registry delegates end to end through a real SubagentRunn
       presenter: childPresenter,
       parentPresenter: new SilentToolPresenter(),
     });
-    assert.equal(harness.childRegistry.schemas().length, 6, "the child keeps the six base tools");
-    assert.equal(harness.parentRegistry.schemas().length, 7, "the parent adds the task tool");
+    assert.equal(harness.childRegistry.schemas().length, 7, "the child keeps the seven base tools");
+    assert.equal(harness.parentRegistry.schemas().length, 8, "the parent adds the task tool");
     const messages: Conversation = [{ role: "user", content: "delegate the reading" }];
 
     await harness.loop.run(new Session(messages));

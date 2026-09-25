@@ -2,6 +2,7 @@ import type { Tool } from "./core/Tool.js";
 import { BashTool } from "./BashTool.js";
 import { EditFileTool } from "./EditFileTool.js";
 import { GlobTool } from "./GlobTool.js";
+import { LoadSkillTool } from "./LoadSkillTool.js";
 import { ReadFileTool } from "./ReadFileTool.js";
 import { TodoWriteTool } from "./TodoWriteTool.js";
 import { WriteFileTool } from "./WriteFileTool.js";
@@ -11,7 +12,7 @@ export interface CreateDefaultToolsOptions {
   readonly overrides?: readonly Tool<unknown>[] | undefined;
 }
 
-/** The six built-in tools in the same order the previous schema list used. */
+/** The seven built-in tools in the same order the previous schema list used. */
 export function createDefaultTools(options: CreateDefaultToolsOptions = {}): Tool<unknown>[] {
   const defaults: Tool<unknown>[] = [
     new BashTool(),
@@ -20,6 +21,7 @@ export function createDefaultTools(options: CreateDefaultToolsOptions = {}): Too
     new EditFileTool(),
     new GlobTool(),
     new TodoWriteTool(),
+    new LoadSkillTool(),
   ];
   const overrides = options.overrides ?? [];
   const tools = defaults.map(
